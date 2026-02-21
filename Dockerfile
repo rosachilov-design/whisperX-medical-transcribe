@@ -24,7 +24,7 @@ RUN echo "torch==2.1.0" > /tmp/constraints.txt && \
 RUN pip install --no-cache-dir faster-whisper -c /tmp/constraints.txt
 RUN pip install --no-cache-dir "pyannote.audio==3.1.1" -c /tmp/constraints.txt
 RUN pip install --no-cache-dir ctranslate2 -c /tmp/constraints.txt
-RUN pip install --no-cache-dir pandas nltk -c /tmp/constraints.txt
+RUN pip install --no-cache-dir pandas nltk transformers omegaconf triton -c /tmp/constraints.txt
 RUN pip install --no-cache-dir --no-deps "git+https://github.com/m-bain/whisperx.git"
 
 # Pre-download models into the image
