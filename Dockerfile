@@ -17,15 +17,16 @@ RUN pip install --no-cache-dir onnxruntime-gpu
 # Set up constraints to prevent pip from upgrading PyTorch to 2.6/2.8
 RUN echo "torch==2.1.0" > /tmp/constraints.txt && \
     echo "torchaudio==2.1.0" >> /tmp/constraints.txt && \
-    echo "torchvision==0.16.0" >> /tmp/constraints.txt
+    echo "torchvision==0.16.0" >> /tmp/constraints.txt && \
+    echo "numpy<2.0" >> /tmp/constraints.txt
 
 # Install WhisperX and its hard dependencies one by one
 # Using the constraints file forces pip to respect the already installed versions
 RUN pip install --no-cache-dir faster-whisper -c /tmp/constraints.txt
-RUN pip install --no-cache-dir "pyannote.audio>=4.0.0" -c /tmp/constraints.txt
+RUN pip install --no-cache-dir "pyannote.audio==3.1.1" -c /tmp/constraints.txt
 RUN pip install --no-cache-dir ctranslate2 -c /tmp/constraints.txt
 RUN pip install --no-cache-dir pandas nltk "transformers<4.45" omegaconf triton -c /tmp/constraints.txt
-RUN pip install --no-cache-dir --no-deps "git+https://github.com/m-bain/whisperx.git"
+RUN pip install --no-cache-dir "whisperx==3.1.1" -c /tmp/constraints.txt
 
 # Pre-download models into the image
 # Using int8 to save memory during the download phase (prevents OOM in build env)

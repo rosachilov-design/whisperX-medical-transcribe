@@ -28,7 +28,7 @@ model_a, metadata = whisperx.load_align_model(
 
 print("Loading Diarization pipeline...")
 diarize_model = whisperx.DiarizationPipeline(
-    token=HF_TOKEN, device=DEVICE
+    use_auth_token=HF_TOKEN, device=DEVICE
 )
 print("✅ All models ready and cached in VRAM.")
 
