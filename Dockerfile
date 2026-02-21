@@ -14,12 +14,17 @@ ENV HF_HOME=/app/models
 RUN pip install --no-cache-dir runpod requests setuptools
 RUN pip install --no-cache-dir onnxruntime-gpu
 
+# Set up constraints to prevent pip from upgrading PyTorch to 2.6/2.8
+RUN echo "torch==2.1.0" > /tmp/constraints.txt && \
+    echo "torchaudio==2.1.0" >> /tmp/constraints.txt && \
+    echo "torchvision==0.16.0" >> /tmp/constraints.txt
+
 # Install WhisperX and its hard dependencies one by one
-# This prevents the resolver from getting stuck in a loop
-RUN pip install --no-cache-dir faster-whisper
-RUN pip install --no-cache-dir pyannote.audio==3.1.1 --extra-index-url https://download.pytorch.org/whl/cu118
-RUN pip install --no-cache-dir ctranslate2
-RUN pip install --no-cache-dir git+https://github.com/m-bain/whisperx.git --extra-index-url https://download.pytorch.org/whl/cu118
+# Using the constraints file forces pip to respect the already installed versions
+RUN pip install --no-cache-dir faster-whisper -c /tmp/constraints.txt
+RUN pip install --no-cache-dir "pyannote.audio==3.1.1" -c /tmp/constraints.txt
+RUN pip install --no-cache-dir ctranslate2 -c /tmp/constraints.txt
+RUN pip install --no-cache-dir "git+https://github.com/m-bain/whisperx.git" -c /tmp/constraints.txt
 
 # Pre-download models into the image
 # Using int8 to save memory during the download phase (prevents OOM in build env)
