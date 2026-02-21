@@ -74,8 +74,9 @@ def handler(job):
     diarize_model = whisperx.DiarizationPipeline(
         use_auth_token=hf_token, device=DEVICE
     )
+    # Ensure it uses the cache_dir where we pre-downloaded the models in Docker
     diarize_segments = diarize_model(
-        audio, min_speakers=min_speakers, max_speakers=max_speakers
+        audio, min_speakers=min_speakers, max_speakers=max_speakers,
     )
     result = whisperx.assign_word_speakers(diarize_segments, result)
     del diarize_model
