@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /app/models
+ENV HF_HOME=/app/models
 
 # Install runpod and basic utils
 RUN pip install --no-cache-dir runpod requests setuptools
@@ -28,12 +29,16 @@ ENV HF_TOKEN=$HF_TOKEN
 RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')"
 
 # Pyannote diarization (try to pre-download, but don't fail build if token is missing/invalid)
-RUN python -c "from pyannote.audio import Pipeline; \
-    try: \
-    Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token='${HF_TOKEN}', cache_dir='/app/models'); \
-    print('✅ Diarization model cached.'); \
-    except Exception as e: \
-    print(f'⚠️ Could not pre-cache diarization: {e}');"
+RUN echo "import os" > /tmp/preload.py && \
+    echo "from pyannote.audio import Pipeline" >> /tmp/preload.py && \
+    echo "token = os.environ.get('HF_TOKEN')" >> /tmp/preload.py && \
+    echo "try:" >> /tmp/preload.py && \
+    echo "    Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=token, cache_dir='/app/models')" >> /tmp/preload.py && \
+    echo "    print('✅ Diarization model cached.')" >> /tmp/preload.py && \
+    echo "except Exception as e:" >> /tmp/preload.py && \
+    echo "    print(f'⚠️ Could not pre-cache diarization: {e}')" >> /tmp/preload.py && \
+    python /tmp/preload.py && \
+    rm /tmp/preload.py
 
 # Russian alignment model
 RUN python -c "import whisperx; whisperx.load_align_model(language_code='ru', device='cpu', model_dir='/app/models')"
