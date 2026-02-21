@@ -2,3 +2,12 @@
 .env
 __pycache__
 *.pyc
+
+# Exclude Dashboard files (Irrelevant for Serverless container)
+server.py
+static/
+uploads/
+cache/
+*.tar.gz
+*.md
+*.docx
