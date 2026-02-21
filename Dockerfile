@@ -23,18 +23,20 @@ RUN pip install --no-cache-dir git+https://github.com/m-bain/whisperx.git
 # Pre-download models into the image
 # Using int8 to save memory during the download phase (prevents OOM in build env)
 ARG HF_TOKEN
+ENV HF_TOKEN=$HF_TOKEN
+
 RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')"
 
-# Pyannote diarization (requires HF token at build time)
-RUN python -c "\
-    from pyannote.audio import Pipeline; \
-    Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', \
-    use_auth_token='${HF_TOKEN}', cache_dir='/app/models')"
+# Pyannote diarization (try to pre-download, but don't fail build if token is missing/invalid)
+RUN python -c "from pyannote.audio import Pipeline; \
+    try: \
+    Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token='${HF_TOKEN}', cache_dir='/app/models'); \
+    print('✅ Diarization model cached.'); \
+    except Exception as e: \
+    print(f'⚠️ Could not pre-cache diarization: {e}');"
 
 # Russian alignment model
-RUN python -c "\
-    import whisperx; \
-    whisperx.load_align_model(language_code='ru', device='cpu', model_dir='/app/models')"
+RUN python -c "import whisperx; whisperx.load_align_model(language_code='ru', device='cpu', model_dir='/app/models')"
 
 COPY handler.py /app/handler.py
 
