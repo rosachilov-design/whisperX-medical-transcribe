@@ -4,8 +4,10 @@ WORKDIR /app
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg git build-essential && \
+    ffmpeg git build-essential libsndfile1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /app/models
 
 # Install runpod and basic utils
 RUN pip install --no-cache-dir runpod requests setuptools
@@ -15,14 +17,13 @@ RUN pip install --no-cache-dir onnxruntime-gpu
 # This prevents the resolver from getting stuck in a loop
 RUN pip install --no-cache-dir faster-whisper
 RUN pip install --no-cache-dir pyannote.audio==3.1.1
+RUN pip install --no-cache-dir ctranslate2
 RUN pip install --no-cache-dir git+https://github.com/m-bain/whisperx.git
 
-# Pre-download models into the image (critical for fast cold starts)
-# WhisperX large-v3
+# Pre-download models into the image
+# Using int8 to save memory during the download phase (prevents OOM in build env)
 ARG HF_TOKEN
-RUN python -c "\
-    import whisperx; \
-    whisperx.load_model('large-v3', 'cpu', compute_type='float32', download_root='/app/models')"
+RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')"
 
 # Pyannote diarization (requires HF token at build time)
 RUN python -c "\
