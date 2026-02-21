@@ -7,15 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg git build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# Install runpod first
-RUN pip install --no-cache-dir runpod
+# Install runpod and basic utils
+RUN pip install --no-cache-dir runpod requests setuptools
+RUN pip install --no-cache-dir onnxruntime-gpu
 
-# Install WhisperX and dependencies
-# We don't force-reinstall torch/torchaudio/torchvision as they are pre-baked into the RunPod image
-RUN pip install --no-cache-dir \
-    git+https://github.com/m-bain/whisperx.git \
-    pyannote.audio==3.1.1 \
-    faster-whisper
+# Install WhisperX and its hard dependencies one by one
+# This prevents the resolver from getting stuck in a loop
+RUN pip install --no-cache-dir faster-whisper
+RUN pip install --no-cache-dir pyannote.audio==3.1.1
+RUN pip install --no-cache-dir git+https://github.com/m-bain/whisperx.git
 
 # Pre-download models into the image (critical for fast cold starts)
 # WhisperX large-v3
