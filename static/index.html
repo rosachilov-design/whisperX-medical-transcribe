@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transcriber Pro</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap"
+        rel="stylesheet">
+    <script src="https://unpkg.com/wavesurfer.js@7"></script>
+</head>
+
+<body>
+    <div id="app" class="app-container">
+
+        <!-- ═══════════════════════════════════════════════ -->
+        <!--  LAUNCH SCREEN                                  -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <div id="launch-screen" class="launch-screen">
+
+            <!-- Background Orbs -->
+            <div class="orb orb-orange"></div>
+            <div class="orb orb-blue"></div>
+
+            <!-- Header -->
+            <div class="launch-header">
+                <div class="logo-badge">⚡</div>
+                <h1 class="logo-title">Transcriber <span class="logo-pro">Pro</span></h1>
+                <p class="logo-tagline">GPU-powered · Speaker Diarization · Auto-sync</p>
+            </div>
+
+            <!-- Two-column layout -->
+            <div class="launch-grid">
+
+                <!-- Left: Drop Zone -->
+                <div class="launch-card drop-card-big" id="dropzone">
+                    <div class="card-icon">🎙️</div>
+                    <h2>Drop Audio File</h2>
+                    <p class="card-sub">M4A, MP3, WAV supported</p>
+                    <div class="drop-hint">
+                        <span class="drop-hint-line"></span>
+                        <span>or click to browse</span>
+                        <span class="drop-hint-line"></span>
+                    </div>
+                    <input type="file" id="file-input" accept=".m4a,.mp3,.wav" style="display:none">
+                    <div class="drop-formats">
+                        <span class="format-tag">M4A</span>
+                        <span class="format-tag">MP3</span>
+                        <span class="format-tag">WAV</span>
+                    </div>
+                </div>
+
+                <!-- Right: Pod Config Form -->
+                <div class="launch-card pod-config-card">
+                    <div class="pod-config-header">
+                        <div class="card-icon">🧠</div>
+                        <h2>RunPod Setup</h2>
+                        <div id="pod-status-badge" class="status-badge offline">Offline</div>
+                    </div>
+
+                    <div class="config-form">
+                        <div class="form-row form-row-split">
+                            <div class="form-field">
+                                <label>Pod IP Address</label>
+                                <input type="text" id="pod-ip-input" placeholder="195.26.233.98" autocomplete="off">
+                            </div>
+                            <div class="form-field form-field-sm">
+                                <label>SSH Port</label>
+                                <input type="number" id="pod-port-input" value="22">
+                            </div>
+                        </div>
+                        <div class="form-field">
+                            <label>Serverless Endpoint ID</label>
+                            <input type="text" id="endpoint-id-input" placeholder="rvsnnk5hb1snt6" autocomplete="off">
+                        </div>
+                        <div class="form-field">
+                            <label>Legacy Pod ID</label>
+                            <input type="text" id="pod-id-input" placeholder="pki6m0a0gyhkhc" autocomplete="off">
+                        </div>
+                        <div class="form-field">
+                            <label>SSH Key Path (Legacy)</label>
+                            <input type="text" id="pod-key-input" placeholder="C:\Users\you\.ssh\id_ed25519"
+                                autocomplete="off">
+                        </div>
+                        <button id="save-config-btn" class="save-config-btn">
+                            <span class="btn-icon">🔗</span> Connect to Pod
+                        </button>
+                    </div>
+
+                    <!-- Divider -->
+                    <div class="config-divider"></div>
+
+                    <!-- Pod Action Buttons -->
+                    <div class="pod-actions">
+                        <button id="setup-pod-btn" class="action-btn setup-btn"
+                            title="Deploy code & install AI dependencies">
+                            <span>🚀</span>
+                            <div>
+                                <strong>Fast Setup</strong>
+                                <small>Deploy & Install</small>
+                            </div>
+                        </button>
+                        <button id="resume-pod-btn" class="action-btn wake-btn" title="Wake up the GPU Pod">
+                            <span>🟢</span>
+                            <div>
+                                <strong>Wake Pod</strong>
+                                <small>Start GPU</small>
+                            </div>
+                        </button>
+                        <button id="start-worker-btn" class="action-btn worker-btn" title="Start Transcription Worker">
+                            <span>🎬</span>
+                            <div>
+                                <strong>Start Worker</strong>
+                                <small>Begin Processing</small>
+                            </div>
+                        </button>
+                        <button id="stop-pod-btn" class="action-btn stop-btn" title="Stop Pod & Stop Billing">
+                            <span>⏹️</span>
+                            <div>
+                                <strong>Stop Pod</strong>
+                                <small>End Billing</small>
+                            </div>
+                        </button>
+                    </div>
+
+                    <!-- Live Log Console -->
+                    <div class="log-console-wrap">
+                        <div class="log-header">
+                            <span class="log-dot"></span> Live Logs
+                        </div>
+                        <div id="log-console" class="log-console">
+                            <div class="log-line muted">Waiting for connection...</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════ -->
+        <!--  MAIN REVIEW INTERFACE (shown after file drop)  -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <div id="main-interface" class="interface hidden">
+            <!-- Left Side: Audio and Progress -->
+            <div class="left-panel">
+                <button id="remove-file" class="text-btn">← Back</button>
+
+                <div class="audio-header">
+                    <h2 id="filename-display">filename.m4a</h2>
+                </div>
+
+                <div id="waveform-container">
+                    <div id="waveform"></div>
+                </div>
+
+                <div class="audio-controls">
+                    <div class="time-display">
+                        <span id="current-time">0:00</span>
+                    </div>
+
+                    <div class="controls-column">
+                        <div class="playback-buttons">
+                            <button id="skip-back-15" class="control-btn" title="Back 15s">« 15s</button>
+                            <button id="skip-back-5" class="control-btn" title="Back 5s">‹ 5s</button>
+                            <button id="play-pause" class="main-play-btn">
+                                <div id="play-icon" class="play-icon"></div>
+                            </button>
+                            <button id="skip-forward-5" class="control-btn" title="Forward 5s">5s ›</button>
+                            <button id="skip-forward-15" class="control-btn" title="Forward 15s">15s »</button>
+                        </div>
+                        <div class="speed-controls">
+                            <button class="speed-btn" data-speed="0.5">0.5x</button>
+                            <button class="speed-btn active" data-speed="1">1x</button>
+                            <button class="speed-btn" data-speed="1.5">1.5x</button>
+                            <button class="speed-btn" data-speed="1.75">1.75x</button>
+                            <button class="speed-btn" data-speed="2">2x</button>
+                            <button class="speed-btn" data-speed="2.5">2.5x</button>
+                        </div>
+                    </div>
+
+                    <div class="time-display">
+                        <span id="duration">0:00</span>
+                    </div>
+                </div>
+
+                <div id="transcription-actions" class="transcription-actions">
+                    <button id="start-transcription-btn" class="start-transcription-btn">
+                        Start Transcription
+                    </button>
+                </div>
+
+                <div class="progress-section hidden" id="progress-section">
+                    <div class="progress-info">
+                        <span id="status-text">Ready</span>
+                        <span id="percent-text">0%</span>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div id="progress-bar" class="progress-bar"></div>
+                    </div>
+                </div>
+
+                <!-- NEW: Integrated Cloud Console for Monitoring -->
+                <div class="cloud-monitor-mini">
+                    <div class="monitor-header">
+                        <span class="log-dot"></span> Cloud Log Console
+                    </div>
+                    <div id="log-console-mini" class="log-console">
+                        <div class="log-line muted">Monitoring Pod...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Side: Transcription -->
+            <div class="right-panel">
+                <div class="speaker-management">
+                    <div class="speaker-input-row">
+                        <input type="text" id="speaker-input" placeholder="Add speaker name...">
+                        <button id="add-speaker-btn">Add</button>
+                    </div>
+                    <div id="speaker-list" class="speaker-chips">
+                    </div>
+                </div>
+
+                <div id="transcription-content" class="transcription-list">
+                    <div class="placeholder-text">
+                        Your transcription will appear here in real-time...
+                    </div>
+                </div>
+
+                <div id="footer-actions" class="footer-actions hidden">
+                    <button id="open-md-btn" class="open-btn">
+                        .md <span id="md-filename-span" class="hidden">transcript.md</span>
+                    </button>
+                    <button id="open-docx-btn" class="open-btn docx-btn">
+                        .docx <span id="docx-filename-span" class="hidden">transcript.docx</span>
+                    </button>
+                </div>
+
+            </div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+
+</html>
