@@ -17,9 +17,9 @@ RUN pip install --no-cache-dir onnxruntime-gpu
 # Install WhisperX and its hard dependencies one by one
 # This prevents the resolver from getting stuck in a loop
 RUN pip install --no-cache-dir faster-whisper
-RUN pip install --no-cache-dir pyannote.audio==3.1.1
+RUN pip install --no-cache-dir "pyannote.audio==3.1.1" "torch==2.1.0+cu118" "torchaudio==2.1.0+cu118" "torchvision==0.16.0+cu118" --extra-index-url https://download.pytorch.org/whl/cu118
 RUN pip install --no-cache-dir ctranslate2
-RUN pip install --no-cache-dir git+https://github.com/m-bain/whisperx.git
+RUN pip install --no-cache-dir "git+https://github.com/m-bain/whisperx.git" "torch==2.1.0+cu118" "torchaudio==2.1.0+cu118" "torchvision==0.16.0+cu118" --extra-index-url https://download.pytorch.org/whl/cu118
 
 # Pre-download models into the image
 # Using int8 to save memory during the download phase (prevents OOM in build env)

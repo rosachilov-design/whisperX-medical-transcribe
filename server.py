@@ -235,11 +235,13 @@ def upload_to_s3(file_path: Path, task_id: str):
             pct = min(int((uploaded / file_size) * 90), 90)
             transcriptions[task_id]["progress"] = pct
 
+        from boto3.s3.transfer import TransferConfig
         s3.upload_file(
             str(file_path),
             S3_BUCKET,
             f"transcriber/uploads/{file_path.name}",
             Callback=progress_callback,
+            Config=TransferConfig(multipart_threshold=2 * 1024 * 1024 * 1024)
         )
 
         transcriptions[task_id]["status"] = "uploaded"
