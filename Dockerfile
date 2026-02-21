@@ -33,7 +33,7 @@ RUN echo "import os" > /tmp/preload.py && \
     echo "from pyannote.audio import Pipeline" >> /tmp/preload.py && \
     echo "token = os.environ.get('HF_TOKEN')" >> /tmp/preload.py && \
     echo "try:" >> /tmp/preload.py && \
-    echo "    Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=token, cache_dir='/app/models')" >> /tmp/preload.py && \
+    echo "    Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', token=token, cache_dir='/app/models')" >> /tmp/preload.py && \
     echo "    print('✅ Diarization model cached.')" >> /tmp/preload.py && \
     echo "except Exception as e:" >> /tmp/preload.py && \
     echo "    print(f'⚠️ Could not pre-cache diarization: {e}')" >> /tmp/preload.py && \
