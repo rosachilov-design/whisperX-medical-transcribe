@@ -22,9 +22,9 @@ RUN echo "torch==2.1.0" > /tmp/constraints.txt && \
 
 # Install WhisperX and its hard dependencies one by one
 # Using the constraints file forces pip to respect the already installed versions
-RUN pip install --no-cache-dir faster-whisper -c /tmp/constraints.txt
+RUN pip install --no-cache-dir "faster-whisper==0.9.0" -c /tmp/constraints.txt
 RUN pip install --no-cache-dir "pyannote.audio==3.1.1" -c /tmp/constraints.txt
-RUN pip install --no-cache-dir ctranslate2 -c /tmp/constraints.txt
+RUN pip install --no-cache-dir "ctranslate2==3.24.0" -c /tmp/constraints.txt
 RUN pip install --no-cache-dir pandas nltk "transformers<4.45" omegaconf triton -c /tmp/constraints.txt
 RUN pip install --no-cache-dir "whisperx==3.1.1" -c /tmp/constraints.txt
 
