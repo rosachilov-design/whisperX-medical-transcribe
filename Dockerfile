@@ -12,8 +12,19 @@ WORKDIR /workspace
 # Install python packages
 COPY requirements.txt .
 
-# We only need specific dependencies for the serverless endpoint
-RUN pip install --no-cache-dir runpod faster-whisper pyannote.audio soundfile
+# 1. Force install the correct CUDA-enabled torch versions first
+RUN pip install --no-cache-dir \
+    torch==2.1.0 \
+    torchvision==0.16.0 \
+    torchaudio==2.1.0 \
+    --index-url https://download.pytorch.org/whl/cu118
+
+# 2. Install the rest of the stack
+RUN pip install --no-cache-dir \
+    runpod \
+    faster-whisper \
+    pyannote.audio==3.1.1 \
+    soundfile
 
 # Copy the serverless handler code inside
 COPY handler.py .
