@@ -6,6 +6,7 @@ import gc
 import re
 import requests
 import tempfile
+import pandas as pd
 
 # ─── Config & Init ───
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -47,6 +48,8 @@ def clean_hallucinations(text: str) -> str:
         r'\bСубтитры\s*:\s*[^\.]+',
         r'\bПеревод\s*:\s*[^\.]+',
         r'\bОзвучка\s*:\s*[^\.]+',
+        r'\bРедактор субтитров\b',
+        r'\bКорректор\b',
         r'\b(Все права защищены|Продолжение следует|Ставьте лайки|Подписывайтесь на канал)\b',
     ]
     cleaned = text
@@ -128,7 +131,6 @@ def handler(job):
                 result = whisperx.assign_word_speakers(diarize_segments, result)
             elif action == "transcribe" and "timeline" in inp:
                 # User provided timeline from previous step
-                import pandas as pd
                 provided_timeline = pd.DataFrame(inp["timeline"])
                 result = whisperx.assign_word_speakers(provided_timeline, result)
 

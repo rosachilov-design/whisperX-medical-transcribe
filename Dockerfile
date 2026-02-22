@@ -5,20 +5,18 @@
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+ENV HF_HOME=/app/models
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg git build-essential libsndfile1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /app/models
-ENV HF_HOME=/app/models
-
 # ─── Core ML Stack ───
 # Force matching versions for the CUDA 12.4 stack to prevent '2.8.0' type mismatch errors
 RUN pip install --no-cache-dir --upgrade-strategy only-if-needed \
     runpod requests setuptools \
-    "numpy<2" \
     "onnxruntime-gpu>=1.18.0" \
     "torch==2.4.1" \
     "torchvision==0.19.1" \
