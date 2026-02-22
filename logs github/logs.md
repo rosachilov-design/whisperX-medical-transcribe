@@ -12,146 +12,125 @@ Security
 Insights
 Settings
 Build and Push Docker Image
-fixes #24
+fixes #26
 All jobs
 Run details
 Annotations
 1 error
 build-and-push
-failed 4 minutes ago in 2m 42s
+failed 2 minutes ago in 6m 32s
 Search logs
-4s
-0s
-5s
+2s
 1s
-2m 24s
-#16 1.076 Requirement already satisfied: rich>=12.3.0 in /usr/local/lib/python3.11/dist-packages (from typer>=0.24.0->typer-slim->huggingface-hub>=0.21->faster-whisper>=1.1.1) (14.3.3)
-#16 1.076 Requirement already satisfied: annotated-doc>=0.0.2 in /usr/local/lib/python3.11/dist-packages (from typer>=0.24.0->typer-slim->huggingface-hub>=0.21->faster-whisper>=1.1.1) (0.0.4)
-#16 1.085 Requirement already satisfied: markdown-it-py>=2.2.0 in /usr/local/lib/python3.11/dist-packages (from rich>=12.3.0->typer>=0.24.0->typer-slim->huggingface-hub>=0.21->faster-whisper>=1.1.1) (4.0.0)
-#16 1.085 Requirement already satisfied: pygments<3.0.0,>=2.13.0 in /usr/local/lib/python3.11/dist-packages (from rich>=12.3.0->typer>=0.24.0->typer-slim->huggingface-hub>=0.21->faster-whisper>=1.1.1) (2.18.0)
-#16 1.088 Requirement already satisfied: mdurl~=0.1 in /usr/local/lib/python3.11/dist-packages (from markdown-it-py>=2.2.0->rich>=12.3.0->typer>=0.24.0->typer-slim->huggingface-hub>=0.21->faster-whisper>=1.1.1) (0.1.2)
-#16 1.105 Downloading faster_whisper-1.2.1-py3-none-any.whl (1.1 MB)
-#16 1.145    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/1.1 MB 50.9 MB/s eta 0:00:00
-#16 1.156 Downloading av-16.1.0-cp311-cp311-manylinux_2_28_x86_64.whl (40.8 MB)
-#16 1.266    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 40.8/40.8 MB 379.0 MB/s eta 0:00:00
-#16 1.276 Downloading huggingface_hub-1.4.1-py3-none-any.whl (553 kB)
-#16 1.279    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 553.3/553.3 kB 663.5 MB/s eta 0:00:00
-#16 1.289 Downloading onnxruntime-1.24.2-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (17.1 MB)
-#16 1.351    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 17.1/17.1 MB 283.0 MB/s eta 0:00:00
-#16 1.362 Downloading tokenizers-0.22.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.3 MB)
-#16 1.373    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.3/3.3 MB 327.7 MB/s eta 0:00:00
-#16 1.383 Downloading hf_xet-1.2.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.3 MB)
-#16 1.390    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.3/3.3 MB 656.6 MB/s eta 0:00:00
-#16 1.400 Downloading typer_slim-0.24.0-py3-none-any.whl (3.4 kB)
-#16 1.636 Installing collected packages: hf-xet, av, onnxruntime, typer-slim, huggingface-hub, tokenizers, faster-whisper
-#16 3.417 Successfully installed av-16.1.0 faster-whisper-1.2.1 hf-xet-1.2.0 huggingface-hub-1.4.1 onnxruntime-1.24.2 tokenizers-0.22.2 typer-slim-0.24.0
-#16 3.417 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable.It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
-#16 3.525 
-#16 3.525 [notice] A new release of pip is available: 24.2 -> 26.0.1
-#16 3.525 [notice] To update, run: python -m pip install --upgrade pip
-#16 DONE 3.9s
+6s
+1s
+6m 10s
+#21 40.59     Found existing installation: filelock 3.20.0
+#21 40.59     Uninstalling filelock-3.20.0:
+#21 40.60       Successfully uninstalled filelock-3.20.0
+#21 40.61   Attempting uninstall: triton
+#21 40.61     Found existing installation: triton 3.0.0
+#21 40.63     Uninstalling triton-3.0.0:
+#21 41.84       Successfully uninstalled triton-3.0.0
+#21 44.53   Attempting uninstall: nvidia-cusparse-cu12
+#21 44.54     Found existing installation: nvidia-cusparse-cu12 12.3.0.142
+#21 44.54     Uninstalling nvidia-cusparse-cu12-12.3.0.142:
+#21 44.98       Successfully uninstalled nvidia-cusparse-cu12-12.3.0.142
+#21 46.92   Attempting uninstall: nvidia-cudnn-cu12
+#21 46.93     Found existing installation: nvidia-cudnn-cu12 9.1.0.70
+#21 46.93     Uninstalling nvidia-cudnn-cu12-9.1.0.70:
+#21 51.19       Successfully uninstalled nvidia-cudnn-cu12-9.1.0.70
+#21 59.40   Attempting uninstall: jinja2
+#21 59.40     Found existing installation: Jinja2 3.1.6
+#21 59.41     Uninstalling Jinja2-3.1.6:
+#21 59.43       Successfully uninstalled Jinja2-3.1.6
+#21 59.50   Attempting uninstall: nvidia-cusolver-cu12
+#21 59.51     Found existing installation: nvidia-cusolver-cu12 11.6.0.99
+#21 59.51     Uninstalling nvidia-cusolver-cu12-11.6.0.99:
+#21 59.82       Successfully uninstalled nvidia-cusolver-cu12-11.6.0.99
+#21 61.21   Attempting uninstall: torch
+#21 61.21     Found existing installation: torch 2.4.0+cu124
+#21 61.54     Uninstalling torch-2.4.0+cu124:
+#21 73.46       Successfully uninstalled torch-2.4.0+cu124
+#21 89.66   Attempting uninstall: torchvision
+#21 89.67     Found existing installation: torchvision 0.19.0+cu124
+#21 89.69     Uninstalling torchvision-0.19.0+cu124:
+#21 89.87       Successfully uninstalled torchvision-0.19.0+cu124
+#21 90.28   Attempting uninstall: torchaudio
+#21 90.28     Found existing installation: torchaudio 2.4.0+cu124
+#21 90.30     Uninstalling torchaudio-2.4.0+cu124:
+#21 90.46       Successfully uninstalled torchaudio-2.4.0+cu124
+#21 90.70 ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+#21 90.70 whisperx 3.8.1 requires pyannote-audio>=4.0.0, but you have pyannote-audio 3.4.0 which is incompatible.
+#21 90.70 whisperx 3.8.1 requires torch~=2.8.0, but you have torch 2.4.0+cu124 which is incompatible.
+#21 90.70 whisperx 3.8.1 requires torchaudio~=2.8.0, but you have torchaudio 2.4.0+cu124 which is incompatible.
+#21 90.70 whisperx 3.8.1 requires transformers>=4.48.0, but you have transformers 4.47.1 which is incompatible.
+#21 90.70 whisperx 3.8.1 requires triton>=3.3.0; sys_platform == "linux" and platform_machine == "x86_64", but you have triton 3.0.0 which is incompatible.
+#21 90.70 Successfully installed MarkupSafe-3.0.2 filelock-3.20.0 fsspec-2025.12.0 jinja2-3.1.6 mpmath-1.3.0 networkx-3.6.1 numpy-2.3.5 nvidia-cublas-cu12-12.4.2.65 nvidia-cuda-cupti-cu12-12.4.99 nvidia-cuda-nvrtc-cu12-12.4.99 nvidia-cuda-runtime-cu12-12.4.99 nvidia-cudnn-cu12-9.1.0.70 nvidia-cufft-cu12-11.2.0.44 nvidia-curand-cu12-10.3.5.119 nvidia-cusolver-cu12-11.6.0.99 nvidia-cusparse-cu12-12.3.0.142 nvidia-nccl-cu12-2.20.5 nvidia-nvjitlink-cu12-12.4.99 nvidia-nvtx-cu12-12.4.99 pillow-12.0.0 sympy-1.14.0 torch-2.4.0+cu124 torchaudio-2.4.0+cu124 torchvision-0.19.0+cu124 triton-3.0.0 typing-extensions-4.15.0
+#21 90.70 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable.It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#21 DONE 94.5s
 
-#17 [10/17] RUN pip install --no-cache-dir "pyannote.audio>=4.0.0" -c /tmp/constraints.txt
-#17 0.469 Collecting pyannote.audio>=4.0.0
-#17 0.501   Downloading pyannote_audio-4.0.4-py3-none-any.whl.metadata (13 kB)
-#17 0.520 Collecting asteroid-filterbanks>=0.4.0 (from pyannote.audio>=4.0.0)
-#17 0.531   Downloading asteroid_filterbanks-0.4.0-py3-none-any.whl.metadata (3.3 kB)
-#17 0.546 Collecting einops>=0.8.1 (from pyannote.audio>=4.0.0)
-#17 0.557   Downloading einops-0.8.2-py3-none-any.whl.metadata (13 kB)
-#17 0.560 Requirement already satisfied: huggingface-hub>=0.28.1 in /usr/local/lib/python3.11/dist-packages (from pyannote.audio>=4.0.0) (1.4.1)
-#17 0.676 Collecting lightning>=2.4 (from pyannote.audio>=4.0.0)
-#17 0.687   Downloading lightning-2.6.1-py3-none-any.whl.metadata (44 kB)
-#17 0.892 Collecting matplotlib>=3.10.0 (from pyannote.audio>=4.0.0)
-#17 0.902   Downloading matplotlib-3.10.8-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (52 kB)
-#17 0.939 Collecting opentelemetry-api>=1.34.0 (from pyannote.audio>=4.0.0)
-#17 0.949   Downloading opentelemetry_api-1.39.1-py3-none-any.whl.metadata (1.5 kB)
-#17 0.975 Collecting opentelemetry-exporter-otlp>=1.34.0 (from pyannote.audio>=4.0.0)
-#17 0.985   Downloading opentelemetry_exporter_otlp-1.39.1-py3-none-any.whl.metadata (2.4 kB)
-#17 1.012 Collecting opentelemetry-sdk>=1.34.0 (from pyannote.audio>=4.0.0)
-#17 1.022   Downloading opentelemetry_sdk-1.39.1-py3-none-any.whl.metadata (1.5 kB)
-#17 1.045 Collecting pyannote-core>=6.0.1 (from pyannote.audio>=4.0.0)
-#17 1.058   Downloading pyannote_core-6.0.1-py3-none-any.whl.metadata (1.9 kB)
-#17 1.079 Collecting pyannote-database>=6.1.1 (from pyannote.audio>=4.0.0)
-#17 1.089   Downloading pyannote_database-6.1.1-py3-none-any.whl.metadata (30 kB)
-#17 1.110 Collecting pyannote-metrics>=4.0.0 (from pyannote.audio>=4.0.0)
-#17 1.120   Downloading pyannote_metrics-4.0.0-py3-none-any.whl.metadata (2.2 kB)
-#17 1.136 Collecting pyannote-pipeline>=4.0.0 (from pyannote.audio>=4.0.0)
-#17 1.146   Downloading pyannote_pipeline-4.0.0-py3-none-any.whl.metadata (5.4 kB)
-#17 1.160 Collecting pyannoteai-sdk>=0.3.0 (from pyannote.audio>=4.0.0)
-#17 1.173   Downloading pyannoteai_sdk-0.4.0-py3-none-any.whl.metadata (2.4 kB)
-#17 1.230 Collecting pytorch-metric-learning>=2.8.1 (from pyannote.audio>=4.0.0)
-#17 1.243   Downloading pytorch_metric_learning-2.9.0-py3-none-any.whl.metadata (18 kB)
-#17 1.246 Requirement already satisfied: rich>=13.9.4 in /usr/local/lib/python3.11/dist-packages (from pyannote.audio>=4.0.0) (14.3.3)
-#17 1.360 Collecting safetensors>=0.5.2 (from pyannote.audio>=4.0.0)
-#17 1.370   Downloading safetensors-0.7.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.1 kB)
-#17 1.390 Collecting torch-audiomentations>=0.12.0 (from pyannote.audio>=4.0.0)
-#17 1.400   Downloading torch_audiomentations-0.12.0-py3-none-any.whl.metadata (15 kB)
-#17 1.451 INFO: pip is looking at multiple versions of pyannote-audio to determine which version is compatible with other requirements. This could take a while.
-#17 1.452 Collecting pyannote.audio>=4.0.0
-#17 1.464   Downloading pyannote_audio-4.0.3-py3-none-any.whl.metadata (13 kB)
-#17 1.482 Collecting soundfile>=0.13.1 (from pyannote.audio>=4.0.0)
-#17 1.492   Downloading soundfile-0.13.1-py2.py3-none-manylinux_2_28_x86_64.whl.metadata (16 kB)
-#17 1.495 Collecting pyannote.audio>=4.0.0
-#17 1.506   Downloading pyannote_audio-4.0.2-py3-none-any.whl.metadata (13 kB)
-#17 1.523   Downloading pyannote_audio-4.0.1-py3-none-any.whl.metadata (14 kB)
-#17 1.537   Downloading pyannote_audio-4.0.0-py3-none-any.whl.metadata (14 kB)
-#17 1.542 Collecting opentelemetry-api==1.34.0 (from pyannote.audio>=4.0.0)
-#17 1.552   Downloading opentelemetry_api-1.34.0-py3-none-any.whl.metadata (1.5 kB)
-#17 1.556 Collecting opentelemetry-exporter-otlp==1.34.0 (from pyannote.audio>=4.0.0)
-#17 1.566   Downloading opentelemetry_exporter_otlp-1.34.0-py3-none-any.whl.metadata (2.4 kB)
-#17 1.570 Collecting opentelemetry-sdk==1.34.0 (from pyannote.audio>=4.0.0)
-#17 1.580   Downloading opentelemetry_sdk-1.34.0-py3-none-any.whl.metadata (1.6 kB)
-#17 1.583 ERROR: Cannot install pyannote-audio==4.0.0, pyannote-audio==4.0.1, pyannote-audio==4.0.2, pyannote-audio==4.0.3 and pyannote-audio==4.0.4 because these package versions have conflicting dependencies.
-#17 1.584 
-#17 1.584 The conflict is caused by:
-#17 1.584     pyannote-audio 4.0.4 depends on torch>=2.8.0
-#17 1.584     pyannote-audio 4.0.3 depends on torch==2.8.0
-#17 1.584     pyannote-audio 4.0.2 depends on torch==2.8.0
-#17 1.584     pyannote-audio 4.0.1 depends on torch>=2.8.0
-#17 1.584     pyannote-audio 4.0.0 depends on torch>=2.8.0
-#17 1.584     The user requested (constraint) torch==2.4.0
-#17 1.584 
-#17 1.584 To fix this you could try to:
-#17 1.584 1. loosen the range of package versions you've specified
-#17 1.584 2. remove package versions to allow pip to attempt to solve the dependency conflict
-#17 1.584 
-#17 1.715 
-#17 1.715 [notice] A new release of pip is available: 24.2 -> 26.0.1
-#17 1.715 [notice] To update, run: python -m pip install --upgrade pip
-#17 1.715 ERROR: ResolutionImpossible: for help visit https://pip.pypa.io/en/latest/topics/dependency-resolution/#dealing-with-dependency-conflicts
-#17 ERROR: process "/bin/bash -o pipefail -c pip install --no-cache-dir \"pyannote.audio>=4.0.0\" -c /tmp/constraints.txt" did not complete successfully: exit code: 1
+#22 [15/18] RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')"
+#22 6.185 2026-02-22 09:59:54.193904149 [W:onnxruntime:Default, device_discovery.cc:131 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename ""5620e0c7-8062-4dce-aeb7-520c7ef76171"" dit not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+
+#22 17.40 2026-02-22 10:00:05 - whisperx.asr - INFO - No language specified, language will be detected for each audio file (increases inference time)
+#22 17.40 2026-02-22 10:00:05 - whisperx.vads.pyannote - INFO - Performing voice activity detection using Pyannote...
+#22 17.41 /usr/local/lib/python3.11/dist-packages/lightning_fabric/utilities/cloud_io.py:73: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+#22 17.50 Lightning automatically upgraded your loaded checkpoint from v1.5.4 to v2.6.1. To apply the upgrade to your files permanently, run `python -m pytorch_lightning.utilities.upgrade_checkpoint ../usr/local/lib/python3.11/dist-packages/whisperx/assets/pytorch_model.bin`
+#22 17.52 Traceback (most recent call last):
+#22 17.52   File "<string>", line 1, in <module>
+#22 17.52   File "/usr/local/lib/python3.11/dist-packages/whisperx/__init__.py", line 21, in load_model
+#22 17.52     return asr.load_model(*args, **kwargs)
+#22 17.52            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#22 17.52   File "/usr/local/lib/python3.11/dist-packages/whisperx/asr.py", line 412, in load_model
+#22 17.52     vad_model = Pyannote(torch.device(device_vad), token=None, **default_vad_options)
+#22 17.52                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#22 17.52   File "/usr/local/lib/python3.11/dist-packages/whisperx/vads/pyannote.py", line 240, in __init__
+#22 17.52     self.vad_pipeline = load_vad_model(device, token=token, model_fp=model_fp)
+#22 17.52                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#22 17.52   File "/usr/local/lib/python3.11/dist-packages/whisperx/vads/pyannote.py", line 48, in load_vad_model
+#22 17.52     vad_pipeline = VoiceActivitySegmentation(segmentation=vad_model, device=torch.device(device))
+#22 17.52                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#22 17.52   File "/usr/local/lib/python3.11/dist-packages/whisperx/vads/pyannote.py", line 199, in __init__
+#22 17.52     super().__init__(segmentation=segmentation, fscore=fscore, token=token, **inference_kwargs)
+#22 17.52   File "/usr/local/lib/python3.11/dist-packages/pyannote/audio/pipelines/voice_activity_detection.py", line 128, in __init__
+#22 17.52     self._segmentation = Inference(model, **inference_kwargs)
+#22 17.52                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#22 17.52 TypeError: Inference.__init__() got an unexpected keyword argument 'token'
+#22 17.52 Model was trained with pyannote.audio 0.0.1, yours is 3.4.0. Bad things might happen unless you revert pyannote.audio to 0.x.
+#22 17.52 Model was trained with torch 1.10.0+cu102, yours is 2.4.0+cu124. Bad things might happen unless you revert torch to 1.x.
+#22 ERROR: process "/bin/bash -o pipefail -c python -c \"import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')\"" did not complete successfully: exit code: 1
 ------
  > importing cache manifest from ***/whisperx-medical:buildcache:
 ------
 ------
- > [10/17] RUN pip install --no-cache-dir "pyannote.audio>=4.0.0" -c /tmp/constraints.txt:
-1.584     The user requested (constraint) torch==2.4.0
-1.584 
-1.584 To fix this you could try to:
-1.584 1. loosen the range of package versions you've specified
-1.584 2. remove package versions to allow pip to attempt to solve the dependency conflict
-1.584 
-1.715 
-Notice: 1.715 [notice] A new release of pip is available: 24.2 -> 26.0.1
-Notice: 1.715 [notice] To update, run: python -m pip install --upgrade pip
-1.715 ERROR: ResolutionImpossible: for help visit https://pip.pypa.io/en/latest/topics/dependency-resolution/#dealing-with-dependency-conflicts
+ > [15/18] RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')":
+17.52     vad_pipeline = VoiceActivitySegmentation(segmentation=vad_model, device=torch.device(device))
+17.52                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+17.52   File "/usr/local/lib/python3.11/dist-packages/whisperx/vads/pyannote.py", line 199, in __init__
+17.52     super().__init__(segmentation=segmentation, fscore=fscore, token=token, **inference_kwargs)
+17.52   File "/usr/local/lib/python3.11/dist-packages/pyannote/audio/pipelines/voice_activity_detection.py", line 128, in __init__
+17.52     self._segmentation = Inference(model, **inference_kwargs)
+17.52                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+17.52 TypeError: Inference.__init__() got an unexpected keyword argument 'token'
+17.52 Model was trained with pyannote.audio 0.0.1, yours is 3.4.0. Bad things might happen unless you revert pyannote.audio to 0.x.
+17.52 Model was trained with torch 1.10.0+cu102, yours is 2.4.0+cu124. Bad things might happen unless you revert torch to 1.x.
 ------
 
  2 warnings found (use docker --debug to expand):
- - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ARG "HF_TOKEN") (line 64)
- - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ENV "HF_TOKEN") (line 65)
-Dockerfile:51
+ - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ARG "HF_TOKEN") (line 74)
+ - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ENV "HF_TOKEN") (line 75)
+Dockerfile:77
 --------------------
-  49 |     
-  50 |     # pyannote.audio v4 (breaking change: use_auth_token → token)
-  51 | >>> RUN pip install --no-cache-dir "pyannote.audio>=4.0.0" -c /tmp/constraints.txt
-  52 |     
-  53 |     # transformers — pinned via constraints, install explicitly
+  75 |     ENV HF_TOKEN=$HF_TOKEN
+  76 |     
+  77 | >>> RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')"
+  78 |     
+  79 |     # Pyannote diarization (v3 uses 'use_auth_token')
 --------------------
-ERROR: failed to build: failed to solve: process "/bin/bash -o pipefail -c pip install --no-cache-dir \"pyannote.audio>=4.0.0\" -c /tmp/constraints.txt" did not complete successfully: exit code: 1
-Error: buildx failed with: ERROR: failed to build: failed to solve: process "/bin/bash -o pipefail -c pip install --no-cache-dir \"pyannote.audio>=4.0.0\" -c /tmp/constraints.txt" did not complete successfully: exit code: 1
+ERROR: failed to build: failed to solve: process "/bin/bash -o pipefail -c python -c \"import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')\"" did not complete successfully: exit code: 1
+Error: buildx failed with: ERROR: failed to build: failed to solve: process "/bin/bash -o pipefail -c python -c \"import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')\"" did not complete successfully: exit code: 1
 0s
 1s
-4s
-1s
+7s
+0s
 0s

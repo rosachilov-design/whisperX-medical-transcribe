@@ -255,9 +255,106 @@ def upload_to_s3(file_path: Path, task_id: str):
         print(f"❌ S3 upload failed: {e}")
 
 
+@app.post("/diarize-cloud/{task_id}")
+async def diarize_cloud(task_id: str):
+    if task_id not in transcriptions:
+        return {"error": "Task not found"}
+    
+    task = transcriptions[task_id]
+    if not RUNPOD_ENDPOINT_ID:
+        return {"error": "RUNPOD_ENDPOINT_ID not set in .env"}
+
+    def poll_job(job_id, task_id):
+        headers = {
+            "Authorization": f"Bearer {RUNPOD_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        status_url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id}"
+        
+        while True:
+            try:
+                resp = http_requests.get(status_url, headers=headers)
+                data = resp.json()
+                status = data.get("status")
+                
+                if status == "COMPLETED":
+                    output = data["output"]
+                    timeline = output.get("timeline", [])
+                    
+                    transcriptions[task_id]["timeline"] = timeline
+                    transcriptions[task_id]["status"] = "diarization_complete"
+                    transcriptions[task_id]["progress"] = 100
+                    
+                    # Cache the diarization back to JSON
+                    json_path = UPLOAD_DIR / Path(task_id).with_suffix(".json")
+                    with open(json_path, "w", encoding="utf-8") as f:
+                        json.dump(transcriptions[task_id], f, indent=2, ensure_ascii=False)
+                        
+                    print(f"✅ Serverless Diarization Done: {task_id}")
+                    break
+                elif status in ["FAILED", "CANCELLED"]:
+                    error_msg = data.get("error", "Job failed")
+                    transcriptions[task_id]["status"] = "error"
+                    transcriptions[task_id]["error"] = error_msg
+                    print(f"❌ Serverless Job Failed ({job_id}): {error_msg}")
+                    break
+                
+                if status == "IN_PROGRESS":
+                    transcriptions[task_id]["status"] = "diarizing"
+                    transcriptions[task_id]["progress"] = 50
+                elif status == "IN_QUEUE":
+                    transcriptions[task_id]["status"] = "diarizing"
+                    transcriptions[task_id]["progress"] = 20
+
+                time.sleep(5)
+            except Exception as e:
+                print(f"⚠️ Error polling job {job_id}: {e}")
+                time.sleep(10)
+
+    try:
+        s3_key = f"transcriber/uploads/{task_id}"
+        presigned_url = s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': S3_BUCKET, 'Key': s3_key},
+            ExpiresIn=3600
+        )
+        
+        url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
+        headers = {
+            "Authorization": f"Bearer {RUNPOD_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "input": {
+                "action": "diarize",
+                "audio": presigned_url,
+                "hf_token": HF_TOKEN
+            }
+        }
+        
+        resp = http_requests.post(url, headers=headers, json=payload)
+        resp_data = resp.json()
+        job_id = resp_data.get("id")
+        
+        if job_id:
+            task["status"] = "diarizing"
+            task["progress"] = 10
+            task["job_id"] = job_id
+            
+            threading.Thread(target=poll_job, args=(job_id, task_id), daemon=True).start()
+            print(f"🚀 Serverless Diarization Job Started: {job_id} for {task_id}")
+            return {"status": "started", "job_id": job_id}
+        else:
+            return {"status": "error", "error": f"Failed to start job: {resp_data}"}
+
+    except Exception as e:
+        task["status"] = "error"
+        task["error"] = str(e)
+        return {"status": "error", "error": str(e)}
+
 @app.post("/transcribe-cloud/{task_id}")
 async def transcribe_cloud(task_id: str):
-    """Trigger RunPod Serverless transcription for an uploaded file using background polling."""
+    """Trigger RunPod Serverless transcription using background polling."""
     if task_id not in transcriptions:
         return {"error": "Task not found"}
     
@@ -281,10 +378,10 @@ async def transcribe_cloud(task_id: str):
                 if status == "COMPLETED":
                     output = data["output"]
                     formatted_segments = []
-                    for seg in output.get("segments", []):
+                    for seg in output.get("result", []):
                         formatted_segments.append({
                             "start": seg["start"],
-                            "end": seg["end"],
+                            "end": seg.get("end", seg["start"] + 2),
                             "timestamp": format_timestamp(seg["start"]),
                             "speaker": seg.get("speaker", "Unknown"),
                             "text": seg["text"]
@@ -303,12 +400,11 @@ async def transcribe_cloud(task_id: str):
                     print(f"❌ Serverless Job Failed ({job_id}): {error_msg}")
                     break
                 
-                # Update progress based on status
                 if status == "IN_PROGRESS":
-                    transcriptions[task_id]["status"] = "processing"
-                    transcriptions[task_id]["progress"] = 80
+                    transcriptions[task_id]["status"] = "transcribing"
+                    transcriptions[task_id]["progress"] = 50
                 elif status == "IN_QUEUE":
-                    transcriptions[task_id]["status"] = "processing"
+                    transcriptions[task_id]["status"] = "transcribing"
                     transcriptions[task_id]["progress"] = 20
 
                 time.sleep(5)
@@ -317,7 +413,6 @@ async def transcribe_cloud(task_id: str):
                 time.sleep(10)
 
     try:
-        # 1. Generate Presigned URL
         s3_key = f"transcriber/uploads/{task_id}"
         presigned_url = s3.generate_presigned_url(
             'get_object',
@@ -325,19 +420,20 @@ async def transcribe_cloud(task_id: str):
             ExpiresIn=3600
         )
         
-        # 2. Call RunPod Serverless /run (Async)
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
         headers = {
             "Authorization": f"Bearer {RUNPOD_API_KEY}",
             "Content-Type": "application/json"
         }
+        
+        timeline = task.get("timeline", [])
+        
         payload = {
             "input": {
-                "audio_url": presigned_url,
-                "language": "ru",
-                "hf_token": HF_TOKEN,
-                "min_speakers": 2,
-                "max_speakers": 5
+                "action": "transcribe",
+                "audio": presigned_url,
+                "timeline": timeline,
+                "hf_token": HF_TOKEN
             }
         }
         
@@ -346,14 +442,12 @@ async def transcribe_cloud(task_id: str):
         job_id = resp_data.get("id")
         
         if job_id:
-            task["status"] = "processing"
+            task["status"] = "transcribing"
             task["progress"] = 10
             task["job_id"] = job_id
             
-            # Start background polling thread
             threading.Thread(target=poll_job, args=(job_id, task_id), daemon=True).start()
-            
-            print(f"🚀 Serverless Job Started: {job_id} for {task_id}")
+            print(f"🚀 Serverless Transcription Job Started: {job_id} for {task_id}")
             return {"status": "started", "job_id": job_id}
         else:
             return {"status": "error", "error": f"Failed to start job: {resp_data}"}

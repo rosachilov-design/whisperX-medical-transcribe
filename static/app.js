@@ -22,7 +22,9 @@ const docxFilenameSpan = document.getElementById('docx-filename-span');
 const removeFileBtn = document.getElementById('remove-file');
 const currentTimeDisplay = document.getElementById('current-time');
 const durationDisplay = document.getElementById('duration');
+const startDiarizationBtn = document.getElementById('start-diarization-btn');
 const startTranscriptionBtn = document.getElementById('start-transcription-btn');
+const newSessionBtn = document.getElementById('new-session-btn');
 const progressSection = document.getElementById('progress-section');
 
 // Pod Control Elements
@@ -150,7 +152,11 @@ async function handleFile(file) {
     }
 
     // No existing transcription — upload to server + S3
-    startTranscriptionBtn.classList.add('hidden');
+    startDiarizationBtn.classList.remove('hidden');
+    startDiarizationBtn.disabled = true;
+    startDiarizationBtn.textContent = 'Uploading...';
+    startTranscriptionBtn.classList.remove('hidden');
+    startTranscriptionBtn.disabled = true;
     progressSection.classList.remove('hidden');
     statusText.textContent = '☁️ Uploading to cloud storage...';
     percentText.textContent = '';
@@ -188,6 +194,7 @@ async function handleFile(file) {
 
 function loadCompletedTranscription(data) {
     progressSection.classList.add('hidden');
+    startDiarizationBtn.classList.add('hidden');
     startTranscriptionBtn.classList.add('hidden');
     statusText.textContent = '✅ Transcription loaded';
 
@@ -214,22 +221,52 @@ function loadCompletedTranscription(data) {
 }
 
 
-// ─── Start Transcription (S3 Upload) ───
+// ─── Start Diarization & Transcription ───
+
+startDiarizationBtn.onclick = async () => {
+    if (!currentTaskId) return;
+
+    startDiarizationBtn.disabled = true;
+    startDiarizationBtn.textContent = 'Diarizing...';
+    progressSection.classList.remove('hidden');
+    statusText.textContent = '🗣️ Identifying speakers (GPU Processing)...';
+
+    try {
+        const r = await fetch(`/diarize-cloud/${currentTaskId}`, { method: 'POST' });
+        const cloudResult = await r.json();
+        if (cloudResult.status === 'started' || cloudResult.status === 'completed') {
+            startPolling();
+        } else {
+            statusText.textContent = `❌ Cloud Error: ${cloudResult.error || JSON.stringify(cloudResult)}`;
+        }
+    } catch (err) {
+        statusText.textContent = `❌ Network Error: ${err.message}`;
+    }
+};
 
 startTranscriptionBtn.onclick = async () => {
-    // In the Pod workflow, this button triggers S3 upload
-    // The transcription itself happens on RunPod
     if (!currentTaskId) return;
 
     startTranscriptionBtn.disabled = true;
-    startTranscriptionBtn.textContent = 'Uploading...';
-
-    const formData = new FormData();
-    // Re-upload is not needed here since file is already on server
-    // Just trigger S3 upload via status check
-    startTranscriptionBtn.classList.add('hidden');
+    startTranscriptionBtn.textContent = 'Transcribing...';
     progressSection.classList.remove('hidden');
-    statusText.textContent = '☁️ File uploaded to cloud. Run worker on Pod to transcribe.';
+    statusText.textContent = '🧠 Transcribing and aligning (GPU Processing)...';
+
+    try {
+        const r = await fetch(`/transcribe-cloud/${currentTaskId}`, { method: 'POST' });
+        const cloudResult = await r.json();
+        if (cloudResult.status === 'started' || cloudResult.status === 'completed') {
+            startPolling();
+        } else {
+            statusText.textContent = `❌ Cloud Error: ${cloudResult.error || JSON.stringify(cloudResult)}`;
+        }
+    } catch (err) {
+        statusText.textContent = `❌ Network Error: ${err.message}`;
+    }
+};
+
+newSessionBtn.onclick = () => {
+    location.reload();
 };
 
 
@@ -263,33 +300,36 @@ function startPolling() {
 function updateUI(data) {
     if (data.status === 'uploading') {
         progressSection.classList.remove('hidden');
-        startTranscriptionBtn.classList.add('hidden');
         statusText.textContent = '☁️ Uploading to cloud...';
         percentText.textContent = `${data.progress || 0}%`;
         progressBar.style.width = `${data.progress || 0}%`;
     }
     else if (data.status === 'uploaded') {
-        // S3 upload done — Trigger Serverless Transcription Automatically
-        progressSection.classList.remove('hidden');
-        statusText.textContent = '🧠 Processing on GPU (RTX 6000 Ada)...';
-        percentText.textContent = '95%'; // Indicative
-        progressBar.style.width = '95%';
+        // S3 upload done — Ready for Diarization
+        progressSection.classList.add('hidden');
+        startDiarizationBtn.disabled = false;
+        startDiarizationBtn.textContent = '1. Start Diarization';
+        statusText.textContent = '☁️ File uploaded to cloud. Ready to Diarize.';
         clearInterval(statusInterval);
-
-        // Trigger the backend to call RunPod Serverless
-        fetch(`/transcribe-cloud/${currentTaskId}`, { method: 'POST' })
-            .then(r => r.json())
-            .then(cloudResult => {
-                if (cloudResult.status === 'started' || cloudResult.status === 'completed') {
-                    // Job started or already done, resume polling for final state
-                    startPolling();
-                } else {
-                    statusText.textContent = `❌ Cloud Error: ${cloudResult.error || JSON.stringify(cloudResult)}`;
-                }
-            })
-            .catch(err => {
-                statusText.textContent = `❌ network Error: ${err.message}`;
-            });
+    }
+    else if (data.status === 'diarizing') {
+        progressSection.classList.remove('hidden');
+        statusText.textContent = '🗣️ Identifying speakers...';
+        percentText.textContent = `${data.progress || 0}%`;
+        progressBar.style.width = `${data.progress || 0}%`;
+    }
+    else if (data.status === 'diarization_complete') {
+        progressSection.classList.add('hidden');
+        startDiarizationBtn.classList.add('hidden');
+        startTranscriptionBtn.disabled = false;
+        statusText.textContent = '✅ Diarization complete. Ready to Transcribe.';
+        clearInterval(statusInterval);
+    }
+    else if (data.status === 'transcribing') {
+        progressSection.classList.remove('hidden');
+        statusText.textContent = '🧠 Transcribing...';
+        percentText.textContent = `${data.progress || 0}%`;
+        progressBar.style.width = `${data.progress || 0}%`;
     }
     else if (data.status === 'completed') {
         loadCompletedTranscription(data);

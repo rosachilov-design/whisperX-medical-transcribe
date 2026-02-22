@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+python-multipart
+python-docx
+faster-whisper
+pyannote.audio
+soundfile
+torch
+torchvision
+torchaudio
+speechbrain
+omegaconf
+einops
+onnxruntime-gpu
+python-dotenv
