@@ -14,14 +14,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN mkdir -p /app/models
 ENV HF_HOME=/app/models
 
-# Install runpod and basic utils
-RUN pip install --no-cache-dir runpod requests setuptools onnxruntime-gpu
-
 # ─── Core ML Stack ───
-RUN pip install --no-cache-dir "ctranslate2>=4.5.0"
-RUN pip install --no-cache-dir "faster-whisper>=1.1.1"
-RUN pip install --no-cache-dir "pyannote.audio>=4.0.0"
-RUN pip install --no-cache-dir "whisperx>=3.8.1"
+# Force matching versions for the CUDA 12.4 stack to prevent '2.8.0' type mismatch errors
+RUN pip install --no-cache-dir --upgrade-strategy only-if-needed \
+    runpod requests setuptools \
+    "numpy<2" \
+    "onnxruntime-gpu>=1.18.0" \
+    "torch==2.4.1" \
+    "torchvision==0.19.1" \
+    "torchaudio==2.4.1" \
+    "ctranslate2>=4.5.0" \
+    "faster-whisper>=1.1.1" \
+    "pyannote.audio>=3.3.1" \
+    "whisperx>=3.8.1" \
+    --extra-index-url https://download.pytorch.org/whl/cu124
 
 # ─── Pre-download Models ───
 # Bake models into the image for instant cold-starts
