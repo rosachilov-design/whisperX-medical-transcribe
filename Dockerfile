@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir --upgrade-strategy only-if-needed \
     "torchaudio==2.4.1" \
     "ctranslate2>=4.5.0" \
     "faster-whisper>=1.1.1" \
-    "pyannote.audio>=3.3.1" \
+    "pyannote.audio>=3.3.1,<4.0.0" \
     "whisperx>=3.8.1" \
     --extra-index-url https://download.pytorch.org/whl/cu124
 
