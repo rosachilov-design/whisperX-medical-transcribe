@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir \
 # 2. Install stack with forced stable versions
 RUN pip install --no-cache-dir \
     "numpy<2" \
-    "filelock<3.12" \
+    "filelock>=3.12.2" \
     "huggingface_hub>=0.17.0" \
     runpod \
     faster-whisper \
