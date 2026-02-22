@@ -30,25 +30,34 @@ RUN pip install --no-cache-dir runpod requests setuptools
 # Install onnxruntime for CUDA 12
 RUN pip install --no-cache-dir onnxruntime-gpu
 
-# ─── Core ML Stack ───
-# No constraints file needed — PyTorch 2.4 is already in the base image
-# and all modern versions are compatible with each other.
+# ─── Constraints ───
+# Lock torch ecosystem to the base image versions so nothing upgrades them.
+# Lock transformers <4.48 because ≥4.48 removed `Pipeline` from top-level imports,
+# which breaks whisperx/asr.py: `from transformers import Pipeline`.
+# Lock torchvision to match PyTorch 2.4 (0.19.x) to prevent operator mismatch.
+RUN echo "torch==2.4.0" > /tmp/constraints.txt && \
+    echo "torchaudio==2.4.0" >> /tmp/constraints.txt && \
+    echo "torchvision==0.19.0" >> /tmp/constraints.txt && \
+    echo "transformers>=4.40,<4.48" >> /tmp/constraints.txt
 
+# ─── Core ML Stack ───
 # CTranslate2 4.5+ requires cuDNN v9 (bundled in the CUDA 12.4 devel image)
-RUN pip install --no-cache-dir "ctranslate2>=4.5.0"
+RUN pip install --no-cache-dir "ctranslate2>=4.5.0" -c /tmp/constraints.txt
 
 # faster-whisper 1.1+ (uses ctranslate2 4.5+)
-RUN pip install --no-cache-dir "faster-whisper>=1.1.1"
+RUN pip install --no-cache-dir "faster-whisper>=1.1.1" -c /tmp/constraints.txt
 
 # pyannote.audio v4 (breaking change: use_auth_token → token)
-RUN pip install --no-cache-dir "pyannote.audio>=4.0.0"
+RUN pip install --no-cache-dir "pyannote.audio>=4.0.0" -c /tmp/constraints.txt
 
-# Pin transformers <4.48 — versions ≥4.48 removed `Pipeline` from top-level imports,
-# which breaks whisperx/asr.py: `from transformers import Pipeline`
-RUN pip install --no-cache-dir "transformers>=4.40,<4.48"
+# transformers — pinned via constraints, install explicitly
+RUN pip install --no-cache-dir "transformers>=4.40,<4.48" -c /tmp/constraints.txt
 
-# WhisperX 3.8.1 — will use the already-installed transformers
-RUN pip install --no-cache-dir "whisperx>=3.8.1"
+# WhisperX 3.8.1 — install with --no-deps so it doesn't override our pinned versions
+# All its real dependencies are already installed above.
+RUN pip install --no-cache-dir --no-deps "whisperx>=3.8.1"
+# Then install any remaining whisperx deps that aren't already present
+RUN pip install --no-cache-dir pandas nltk omegaconf -c /tmp/constraints.txt
 
 # ─── Pre-download Models ───
 # Whisper large-v3 (same model, same quality — just different runtime)
