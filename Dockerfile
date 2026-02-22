@@ -6,9 +6,9 @@
 # Key changes:
 #   - Base image: CUDA 12.4 (was 11.8)
 #   - PyTorch: 2.4.0 (was 2.1.0)
-#   - WhisperX: 3.8.1 (was 3.1.1) — requires pyannote v4, faster-whisper 1.1+
+#   - WhisperX: 3.8.1 (was 3.1.1) — requires faster-whisper 1.1+
 #   - CTranslate2: 4.5+ (was 3.24) — requires cuDNN v9 (included in base image)
-#   - pyannote.audio: 4.0+ (was 3.1.1) — use_auth_token → token
+#   - pyannote.audio: 3.3.x (v4 requires torch>=2.8, incompatible)
 #   - transformers pinned <4.48 (≥4.48 removed Pipeline from top-level imports)
 # ═══════════════════════════════════════════════════════════════
 
@@ -49,8 +49,8 @@ RUN pip install --no-cache-dir "ctranslate2>=4.5.0"
 # faster-whisper 1.1+ (uses ctranslate2 4.5+)
 RUN pip install --no-cache-dir "faster-whisper>=1.1.1"
 
-# pyannote.audio v4 (breaking change: use_auth_token → token)
-RUN pip install --no-cache-dir "pyannote.audio>=4.0.0"
+# pyannote.audio 3.3.x (v4 requires torch>=2.8, incompatible with our torch 2.4)
+RUN pip install --no-cache-dir "pyannote.audio>=3.3,<4.0"
 
 # transformers — pin <4.48 because ≥4.48 removed `Pipeline` from top-level
 # imports, which breaks whisperx/asr.py: `from transformers import Pipeline`.
@@ -76,12 +76,12 @@ ENV HF_TOKEN=$HF_TOKEN
 
 RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')"
 
-# Pyannote diarization (v4 uses 'token' instead of 'use_auth_token')
+# Pyannote diarization (v3 uses 'use_auth_token')
 RUN echo "import os" > /tmp/preload.py && \
     echo "from pyannote.audio import Pipeline" >> /tmp/preload.py && \
     echo "token = os.environ.get('HF_TOKEN')" >> /tmp/preload.py && \
     echo "try:" >> /tmp/preload.py && \
-    echo "    Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', token=token, cache_dir='/app/models')" >> /tmp/preload.py && \
+    echo "    Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=token, cache_dir='/app/models')" >> /tmp/preload.py && \
     echo "    print('✅ Diarization model cached.')" >> /tmp/preload.py && \
     echo "except Exception as e:" >> /tmp/preload.py && \
     echo "    print(f'⚠️ Could not pre-cache diarization: {e}')" >> /tmp/preload.py && \

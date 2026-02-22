@@ -27,13 +27,9 @@ model_a, metadata = whisperx.load_align_model(
 )
 
 print("Loading Diarization pipeline...")
-# ┌──────────────────────────────────────────────────────────┐
-# │ CHANGED: use_auth_token → token (pyannote.audio v4)     │
-# │ Old: whisperx.DiarizationPipeline(use_auth_token=...)    │
-# │ New: whisperx.DiarizationPipeline(token=...)             │
-# └──────────────────────────────────────────────────────────┘
+# pyannote.audio 3.3.x uses use_auth_token (v4 changed to token)
 diarize_model = whisperx.DiarizationPipeline(
-    token=HF_TOKEN, device=DEVICE
+    use_auth_token=HF_TOKEN, device=DEVICE
 )
 print("✅ All models ready and cached in VRAM.")
 
