@@ -37,13 +37,20 @@ def get_align(lang):
 def get_diarize():
     if MODELS["diarize"] is None:
         print("🚀 Loading Diarization pipeline...")
-        # In WhisperX 3.8.1, the pipeline is accessed via whisperx.DiarizationPipeline 
-        # but if that fails, the submodule path is needed.
+        # In WhisperX 3.8.1, the DiarizationPipeline constructor changed.
+        # We try 'use_auth_token' first (old), then 'token' (new).
         try:
+            # First attempt: old style
             MODELS["diarize"] = whisperx.DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
-        except AttributeError:
-            from whisperx.diarize import DiarizationPipeline
-            MODELS["diarize"] = DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
+        except (AttributeError, TypeError):
+            # Second attempt: try the submodule path with the newer 'token' argument
+            try:
+                from whisperx.diarize import DiarizationPipeline
+                MODELS["diarize"] = DiarizationPipeline(token=HF_TOKEN, device=DEVICE)
+            except TypeError:
+                # Catch-all: maybe it still needs use_auth_token but from the submodule
+                from whisperx.diarize import DiarizationPipeline
+                MODELS["diarize"] = DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
     return MODELS["diarize"]
 
 def clean_hallucinations(text: str) -> str:
