@@ -14,17 +14,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # ─── Core ML Stack ───
-# Force matching versions for the CUDA 12.4 stack to prevent '2.8.0' type mismatch errors
-RUN pip install --no-cache-dir --upgrade-strategy only-if-needed \
+# WhisperX 3.8.1 strictly requires Torch 2.8.0 and Pyannote 4.0+. 
+# We explicitly include torchvision here so it upgrades alongside torch and doesn't get left behind (causing the nms error).
+RUN pip install --no-cache-dir --upgrade \
     runpod requests setuptools \
-    "onnxruntime-gpu>=1.18.0" \
-    "torch==2.4.1" \
-    "torchvision==0.19.1" \
-    "torchaudio==2.4.1" \
+    torch torchvision torchaudio \
     "ctranslate2>=4.5.0" \
     "faster-whisper>=1.1.1" \
-    "pyannote.audio>=3.3.1,<4.0.0" \
-    "whisperx>=3.8.1" \
+    "pyannote.audio>=4.0.0" \
+    "whisperx==3.8.1" \
     --extra-index-url https://download.pytorch.org/whl/cu124
 
 # ─── Pre-download Models ───
