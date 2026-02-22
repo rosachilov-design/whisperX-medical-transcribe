@@ -818,6 +818,6 @@ app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8001))
     print(f"🚀 Transcriber Pro (Local Dashboard) starting on port {port}...")
     uvicorn.run(app, host="0.0.0.0", port=port)
