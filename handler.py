@@ -27,7 +27,7 @@ print("Loading pyannote diarization pipeline...")
 try:
     diarization_pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        token=HF_TOKEN
+        use_auth_token=HF_TOKEN
     )
     if diarization_pipeline:
         diarization_pipeline.to(torch.device(device))

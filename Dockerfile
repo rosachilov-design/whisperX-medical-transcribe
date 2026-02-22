@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir \
     "numpy<2" \
     "filelock>=3.12.2" \
-    "huggingface_hub>=0.17.0" \
+    "huggingface_hub>=0.17.0,<0.24.0" \
     runpod \
     faster-whisper \
     pyannote.audio==3.1.1 \
