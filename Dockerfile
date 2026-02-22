@@ -43,7 +43,11 @@ RUN pip install --no-cache-dir "faster-whisper>=1.1.1"
 # pyannote.audio v4 (breaking change: use_auth_token → token)
 RUN pip install --no-cache-dir "pyannote.audio>=4.0.0"
 
-# WhisperX 3.8.1 — pulls in transformers, pandas, nltk, etc.
+# Pin transformers <4.48 — versions ≥4.48 removed `Pipeline` from top-level imports,
+# which breaks whisperx/asr.py: `from transformers import Pipeline`
+RUN pip install --no-cache-dir "transformers>=4.40,<4.48"
+
+# WhisperX 3.8.1 — will use the already-installed transformers
 RUN pip install --no-cache-dir "whisperx>=3.8.1"
 
 # ─── Pre-download Models ───
