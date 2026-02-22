@@ -1,46 +1,41 @@
-FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
+# ═══════════════════════════════════════════════════════════════
+#  MODERNIZED STACK — PyTorch 2.4 / CUDA 12.4 / WhisperX 3.8.1
+# ═══════════════════════════════════════════════════════════════
 
-# Install basic dependencies (ffmpeg needed for audio conversion)
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+
+WORKDIR /app
+
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
+    ffmpeg git build-essential libsndfile1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set the working directory
-WORKDIR /workspace
+RUN mkdir -p /app/models
+ENV HF_HOME=/app/models
 
-# Install python packages
-COPY requirements.txt .
+# Install runpod and basic utils
+RUN pip install --no-cache-dir runpod requests setuptools onnxruntime-gpu
 
-# 1. Force install the correct CUDA-enabled torch versions first
-RUN pip install --no-cache-dir \
-    torch==2.1.0 \
-    torchvision==0.16.0 \
-    torchaudio==2.1.0 \
-    --index-url https://download.pytorch.org/whl/cu118
+# ─── Core ML Stack ───
+RUN pip install --no-cache-dir "ctranslate2>=4.5.0"
+RUN pip install --no-cache-dir "faster-whisper>=1.1.1"
+RUN pip install --no-cache-dir "pyannote.audio>=4.0.0"
+RUN pip install --no-cache-dir "whisperx>=3.8.1"
 
-# 2. Install stack with forced stable versions
-RUN pip install --no-cache-dir \
-    "numpy<2" \
-    "filelock>=3.12.2" \
-    "huggingface_hub>=0.17.0,<0.24.0" \
-    runpod \
-    faster-whisper \
-    pyannote.audio==3.1.1 \
-    soundfile
-
-# 3. Download models during build for instant cold-starts
-# We download Whisper turbo and Pyannote 3.1
-RUN python -c "from faster_whisper import WhisperModel; WhisperModel('turbo', device='cpu', compute_type='int8')"
+# ─── Pre-download Models ───
+# Bake models into the image for instant cold-starts
+RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')"
 
 ARG HF_TOKEN
 ENV HF_TOKEN=$HF_TOKEN
-RUN python -c "from pyannote.audio import Pipeline; Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token='$HF_TOKEN')"
 
-# Copy the serverless handler code inside
-COPY handler.py .
+# Russian alignment model (essential for your medical use case)
+RUN python -c "import whisperx; whisperx.load_align_model(language_code='ru', device='cpu', model_dir='/app/models')"
 
-# Expose port (if applicable, though runpod handles execution directly on handler)
-ENV PYTHONUNBUFFERED=1
+# Optional: Pre-cache diarization (requires HF_TOKEN at build time or it skips)
+RUN python -c "import os; from pyannote.audio import Pipeline; token=os.environ.get('HF_TOKEN'); (Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=token) if token else print('Skipping diarization bake'))"
 
-CMD ["python", "-u", "handler.py"]
+COPY handler.py /app/handler.py
+
+CMD ["python", "-u", "/app/handler.py"]

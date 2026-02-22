@@ -1,285 +1,162 @@
 import os
-import time
-import subprocess
-import re
-import math
-from pathlib import Path
-import json
-import urllib.request
 import runpod
+import whisperx
 import torch
+import gc
+import re
+import requests
+import tempfile
 
-import torchaudio
-if not hasattr(torchaudio, "list_audio_backends"):
-    torchaudio.list_audio_backends = lambda: ["soundfile"]
-from pyannote.audio import Pipeline
-from faster_whisper import WhisperModel
+# ─── Config & Init ───
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+BATCH_SIZE = 16 
+COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
+MODEL_DIR = "/app/models"
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
-# --- Initialization ---
-device = "cuda" if torch.cuda.is_available() else "cpu"
-compute_type = "float16" if device == "cuda" else "int8"
+# Global cache for models
+MODELS = {
+    "whisper": None,
+    "align": {},
+    "diarize": None
+}
 
-print(f"Loading faster-whisper on {device}...")
-model = WhisperModel("turbo", device=device, compute_type=compute_type)
+def get_whisper():
+    if MODELS["whisper"] is None:
+        print("🚀 Loading Whisper model...")
+        MODELS["whisper"] = whisperx.load_model("large-v3", DEVICE, compute_type=COMPUTE_TYPE, download_root=MODEL_DIR)
+    return MODELS["whisper"]
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-print("Loading pyannote diarization pipeline...")
-try:
-    diarization_pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=HF_TOKEN
-    )
-    if diarization_pipeline:
-        diarization_pipeline.to(torch.device(device))
-except Exception as e:
-    print(f"Error loading pyannote: {e}")
-    diarization_pipeline = None
+def get_align(lang):
+    if lang not in MODELS["align"]:
+        print(f"🚀 Loading Alignment model ({lang})...")
+        MODELS["align"][lang] = whisperx.load_align_model(language_code=lang, device=DEVICE, model_dir=MODEL_DIR)
+    return MODELS["align"][lang]
 
-# --- Helper functions ---
-
-def format_timestamp(seconds):
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    if hours > 0:
-        return f"{hours:02}:{minutes:02}:{secs:02}"
-    return f"{minutes:02}:{secs:02}"
-
-def get_duration(file_path):
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(file_path)]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    return float(result.stdout.strip())
+def get_diarize():
+    if MODELS["diarize"] is None:
+        print("🚀 Loading Diarization pipeline...")
+        MODELS["diarize"] = whisperx.DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
+    return MODELS["diarize"]
 
 def clean_hallucinations(text: str) -> str:
-    hallucination_patterns = [
+    """Medical-focused Russian hallucination filter."""
+    patterns = [
         r'\bРедактор субтитров\s+([А-ЯA-Z]\.?\s*){1,2}[А-ЯA-Z][а-яa-z]+',
         r'\bКорректор\s+([А-ЯA-Z]\.?\s*){1,2}[А-ЯA-Z][а-яa-z]+',
         r'\bСубтитры\s*:\s*[^\.]+',
         r'\bПеревод\s*:\s*[^\.]+',
         r'\bОзвучка\s*:\s*[^\.]+',
-        r'\bРедактор субтитров\b',
-        r'\bКорректор\b',
         r'\b(Все права защищены|Продолжение следует|Ставьте лайки|Подписывайтесь на канал)\b',
     ]
     cleaned = text
-    for pattern in hallucination_patterns:
-        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\s+', ' ', cleaned)
-    return cleaned.strip()
+    for p in patterns:
+        cleaned = re.sub(p, '', cleaned, flags=re.IGNORECASE)
+    return re.sub(r'\s+', ' ', cleaned).strip()
 
-def get_speaker_for_word(timeline, word_start, word_end):
-    if not timeline:
-        return "Unknown"
-    best_speaker = None
-    best_overlap = 0
-    for entry in timeline:
-        overlap_start = max(word_start, entry["start"])
-        overlap_end = min(word_end, entry["end"])
-        if overlap_end > overlap_start:
-            overlap = overlap_end - overlap_start
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_speaker = entry["speaker"]
-    if best_speaker:
-        return best_speaker
-    mid = (word_start + word_end) / 2
-    nearest = min(timeline, key=lambda s: min(abs(s["start"] - mid), abs(s["end"] - mid)))
-    return nearest["speaker"]
-
-
-# --- Core Pipeline Actions ---
-
-def do_diarize(file_path: Path):
-    """Only run Pyannote diarization and return the timeline."""
-    if not diarization_pipeline:
-        return {"error": "Pipeline not loaded"}
-
-    print(f"Running diarization on {file_path}...")
-    wav_path = file_path.with_suffix('.converted.wav')
-    cmd = ["ffmpeg", "-y", "-i", str(file_path), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav_path)]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def download_file(url: str) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    print(f"📥 Downloading audio from: {url[:50]}...")
+    try:
+        resp = requests.get(url, headers=headers, stream=True, timeout=30)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 403:
+            raise Exception("HTTP 403 Forbidden: The S3 URL may have expired or the worker is blocked. Please retry.")
+        raise
     
-    import soundfile as sf
-    import numpy as np
-    data, sample_rate = sf.read(str(wav_path), dtype='float32')
-    if data.ndim == 1:
-        data = data[np.newaxis, :]
-    else:
-        data = data.T
-    waveform = torch.from_numpy(data)
-    audio_input = {"waveform": waveform, "sample_rate": sample_rate}
-    
-    diarize_output = diarization_pipeline(audio_input, min_speakers=2)
-    annotation = getattr(diarize_output, 'speaker_diarization', diarize_output)
-    
-    timeline = []
-    for turn, _, speaker in annotation.itertracks(yield_label=True):
-        timeline.append({"start": turn.start, "end": turn.end, "speaker": speaker})
-        
-    os.remove(wav_path)
-    return {"timeline": timeline}
+    suffix = "." + url.split("?")[0].split(".")[-1] if "." in url else ".m4a"
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    with os.fdopen(fd, 'wb') as tmp:
+        for chunk in resp.iter_content(8192):
+            tmp.write(chunk)
+    return path
 
+# ─── Handler ───
 
-def do_transcribe(file_path: Path, timeline: list):
-    """Only run faster-whisper context-aware chunk transcription using the provided timeline."""
-    natural_chunks = []
-    if timeline:
-        current_chunk_turns = []
-        chunk_start_time = timeline[0]["start"]
-        for i, entry in enumerate(timeline):
-            current_chunk_turns.append(entry)
-            elapsed = entry["end"] - chunk_start_time
-            is_last = (i == len(timeline) - 1)
-            if elapsed >= 30 or is_last:
-                natural_chunks.append({"start": chunk_start_time, "end": entry["end"], "turns": current_chunk_turns})
-                if not is_last:
-                    current_chunk_turns = []
-                    chunk_start_time = timeline[i+1]["start"]
-    
-    if not natural_chunks:
-        duration = get_duration(file_path)
-        natural_chunks = [{"start": i*30, "end": min((i+1)*30, duration)} for i in range(math.ceil(duration/30))]
-
-    speaker_map = {}
-    speaker_counter = 0
-    all_speaker_words = []
-
-    for i, chunk in enumerate(natural_chunks):
-        actual_start = chunk["start"]
-        actual_end = chunk["end"]
-        
-        pad = 10.0
-        start_time = max(0, actual_start - pad)
-        end_time = actual_end + pad
-        duration_s = end_time - start_time
-        if duration_s <= 0:
-            continue
-            
-        chunk_path = file_path.parent / f"chunk_{i}.wav"
-        subprocess.run([
-            "ffmpeg", "-y", "-ss", str(start_time), "-t", str(duration_s),
-            "-i", str(file_path), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(chunk_path)
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        if not chunk_path.exists(): continue
-        
-        previous_context = ""
-        if all_speaker_words:
-             previous_context = " ".join([sw["word"] for sw in all_speaker_words[-50:]])
-             
-        try:
-             segments, _ = model.transcribe(
-                 str(chunk_path), language="ru", word_timestamps=True,
-                 condition_on_previous_text=True,
-                 initial_prompt=previous_context if previous_context else "Это аудиозапись беседы или интервью."
-             )
-             segments = list(segments)
-             for segment in segments:
-                 words = getattr(segment, "words", [])
-                 if not words:
-                     text = re.sub(r'\[.*?\]', '', segment.text).strip()
-                     if text:
-                         abs_start = segment.start + start_time
-                         abs_end = segment.end + start_time
-                         midpoint = (abs_start + abs_end) / 2.0
-                         if actual_start <= midpoint <= actual_end:
-                             all_speaker_words.append({
-                                 "word": text, "start": abs_start, "end": abs_end,
-                                 "speaker_raw": get_speaker_for_word(timeline, abs_start, abs_end)
-                             })
-                     continue
-                 for w in words:
-                     word_text = getattr(w, "word", "").strip()
-                     if word_text:
-                         abs_start = w.start + start_time
-                         abs_end = w.end + start_time
-                         midpoint = (abs_start + abs_end) / 2.0
-                         if actual_start <= midpoint <= actual_end:
-                             all_speaker_words.append({
-                                 "word": word_text, "start": abs_start, "end": abs_end,
-                                 "speaker_raw": get_speaker_for_word(timeline, abs_start, abs_end)
-                             })
-        except Exception as e:
-             print(f"Skipping chunk {i}: {e}")
-             
-        os.remove(chunk_path)
-
-    # Align and Finalize
-    final_segments = []
-    if all_speaker_words:
-        cur_raw = all_speaker_words[0]["speaker_raw"]
-        cur_start = all_speaker_words[0]["start"]
-        cur_words = [all_speaker_words[0]["word"]]
-        
-        for sw in all_speaker_words[1:]:
-            if sw["speaker_raw"] == cur_raw:
-                cur_words.append(sw["word"])
-            else:
-                if cur_raw not in speaker_map:
-                    speaker_counter += 1
-                    speaker_map[cur_raw] = f"Speaker {speaker_counter}"
-                
-                text = clean_hallucinations(" ".join(cur_words))
-                if text:
-                    final_segments.append({
-                        "start": cur_start, "timestamp": format_timestamp(cur_start),
-                        "text": text, "speaker": speaker_map[cur_raw]
-                    })
-                cur_raw = sw["speaker_raw"]
-                cur_start = sw["start"]
-                cur_words = [sw["word"]]
-                
-        if cur_words:
-            if cur_raw not in speaker_map:
-                speaker_counter += 1
-                speaker_map[cur_raw] = f"Speaker {speaker_counter}"
-            text = clean_hallucinations(" ".join(cur_words))
-            if text:
-                final_segments.append({
-                    "start": cur_start, "timestamp": format_timestamp(cur_start),
-                    "text": text, "speaker": speaker_map[cur_raw]
-                })
-
-    smoothed = []
-    for seg in final_segments:
-        if smoothed and seg["speaker"] == smoothed[-1]["speaker"]:
-            smoothed[-1]["text"] += " " + seg["text"]
-        else:
-            smoothed.append(seg.copy())
-
-    return {"result": smoothed}
-
-
-# --- Serverless Handler Entrypoint ---
-
-def handler(event):
-    job_input = event.get('input', {})
-    action = job_input.get('action', 'diarize')
-    audio_url = job_input.get('audio')
+def handler(job):
+    inp = job["input"]
+    action = inp.get("action", "full") # default to full if not specified
+    audio_url = inp.get("audio") or inp.get("audio_url")
+    language = inp.get("language", "ru")
     
     if not audio_url:
-         return {"error": "Missing 'audio' input URL"}
+        return {"error": "Missing audio URL"}
 
-    file_ext = audio_url.split("?")[0].split('.')[-1][-4:]
-    if not file_ext.startswith("."): file_ext = ".m4a"
-    local_path = Path("/tmp/downloaded_audio" + file_ext)
-
-    print(f"Downloading audio from {audio_url}")
-    urllib.request.urlretrieve(audio_url, str(local_path))
-    
+    local_path = None
     try:
-        if action == "diarize":
-            result = do_diarize(local_path)
-        elif action == "transcribe":
-            timeline = job_input.get('timeline', [])
-            result = do_transcribe(local_path, timeline)
-        else:
-            result = {"error": f"Unknown action: {action}"}
-    finally:
-         if local_path.exists():
-              os.remove(local_path)
+        local_path = download_file(audio_url)
+        audio = whisperx.load_audio(local_path)
+        
+        response = {}
 
-    return result
+        # 1. Diarization (if requested or full)
+        if action in ["diarize", "full"]:
+            pipe = get_diarize()
+            print("🎙️ Diarizing...")
+            diarize_segments = pipe(audio)
+            
+            # Format timeline for server.py compatibility
+            timeline = []
+            for _, row in diarize_segments.iterrows():
+                timeline.append({
+                    "start": round(row["start"], 3),
+                    "end": round(row["end"], 3),
+                    "speaker": row["speaker"]
+                })
+            response["timeline"] = timeline
+            
+            if action == "diarize":
+                return response
+
+        # 2. Transcription (if requested or full)
+        if action in ["transcribe", "full"]:
+            model = get_whisper()
+            print("📝 Transcribing...")
+            result = model.transcribe(audio, batch_size=BATCH_SIZE, language=language)
+            
+            # 3. Alignment
+            print("🎯 Aligning...")
+            model_a, metadata = get_align(language)
+            result = whisperx.align(result["segments"], model_a, metadata, audio, DEVICE, return_char_alignments=False)
+            
+            # 4. Assign Speakers (if we have diarization info)
+            if action == "full":
+                # We already have diarize_segments from step 1
+                result = whisperx.assign_word_speakers(diarize_segments, result)
+            elif action == "transcribe" and "timeline" in inp:
+                # User provided timeline from previous step
+                import pandas as pd
+                provided_timeline = pd.DataFrame(inp["timeline"])
+                result = whisperx.assign_word_speakers(provided_timeline, result)
+
+            # 5. Format Result for server.py compatibility
+            final_segments = []
+            for seg in result["segments"]:
+                text = clean_hallucinations(seg["text"])
+                if text:
+                    final_segments.append({
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "text": text,
+                        "speaker": seg.get("speaker", "Unknown")
+                    })
+            
+            response["result"] = final_segments
+
+        return response
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return {"error": str(e)}
+    finally:
+        if local_path and os.path.exists(local_path):
+            os.remove(local_path)
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler})
