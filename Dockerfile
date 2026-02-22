@@ -39,5 +39,4 @@ RUN python -c "import whisperx; whisperx.load_align_model(language_code='ru', de
 RUN python -c "import os; from pyannote.audio import Pipeline; t=os.environ.get('HF_TOKEN'); (Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', token=t) if t else print('Skipping diarization bake'))"
 
 COPY handler.py /app/handler.py
-
 CMD ["python", "-u", "/app/handler.py"]
