@@ -19,9 +19,11 @@ RUN pip install --no-cache-dir \
     torchaudio==2.1.0 \
     --index-url https://download.pytorch.org/whl/cu118
 
-# 2. Install stack with forced NumPy version (Pyannote 3.1.1 is incompatible with NumPy 2.0+)
+# 2. Install stack with forced stable versions
 RUN pip install --no-cache-dir \
     "numpy<2" \
+    "filelock<3.12" \
+    "huggingface_hub>=0.17.0" \
     runpod \
     faster-whisper \
     pyannote.audio==3.1.1 \
