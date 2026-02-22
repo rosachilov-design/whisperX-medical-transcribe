@@ -57,7 +57,28 @@ def clean_hallucinations(text: str) -> str:
         cleaned = re.sub(p, '', cleaned, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', cleaned).strip()
 
-def download_file(url: str) -> str:
+import boto3
+from botocore.config import Config
+
+def download_file(url: str, s3_creds: dict = None) -> str:
+    if s3_creds:
+        print(f"📥 Downloading audio natively via boto3: {url}...")
+        try:
+            s3 = boto3.client(
+                "s3",
+                endpoint_url=s3_creds["endpoint"],
+                region_name=s3_creds["region"],
+                aws_access_key_id=s3_creds["access_key"],
+                aws_secret_access_key=s3_creds["secret_key"],
+                config=Config(signature_version="s3v4"),
+            )
+            suffix = "." + url.split(".")[-1] if "." in url else ".m4a"
+            fd, path = tempfile.mkstemp(suffix=suffix)
+            s3.download_file(s3_creds["bucket"], url, path)
+            return path
+        except Exception as e:
+            raise Exception(f"Native S3 download failed: {e}")
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
@@ -83,6 +104,7 @@ def handler(job):
     inp = job["input"]
     action = inp.get("action", "full") # default to full if not specified
     audio_url = inp.get("audio") or inp.get("audio_url")
+    s3_creds = inp.get("s3_creds")
     language = inp.get("language", "ru")
     
     if not audio_url:
@@ -90,7 +112,7 @@ def handler(job):
 
     local_path = None
     try:
-        local_path = download_file(audio_url)
+        local_path = download_file(audio_url, s3_creds)
         audio = whisperx.load_audio(local_path)
         
         response = {}

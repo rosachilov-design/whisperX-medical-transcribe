@@ -18,6 +18,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 import requests as http_requests
 import paramiko
@@ -236,18 +237,22 @@ def upload_to_s3(file_path: Path, task_id: str):
             transcriptions[task_id]["progress"] = pct
 
         from boto3.s3.transfer import TransferConfig
+        
+        # Use a safe ASCII key for S3 to prevent URL encoding mismatch with Signature v4
+        safe_key = f"{uuid.uuid4().hex}_{int(time.time())}{file_path.suffix}"
+
         s3.upload_file(
             str(file_path),
             S3_BUCKET,
-            f"transcriber/uploads/{file_path.name}",
+            f"transcriber/uploads/{safe_key}",
             Callback=progress_callback,
             Config=TransferConfig(multipart_threshold=2 * 1024 * 1024 * 1024)
         )
 
         transcriptions[task_id]["status"] = "uploaded"
         transcriptions[task_id]["progress"] = 100
-        transcriptions[task_id]["s3_key"] = file_path.name
-        print(f"☁️ Uploaded {file_path.name} to S3")
+        transcriptions[task_id]["s3_key"] = safe_key
+        print(f"☁️ Uploaded {file_path.name} to S3 as {safe_key}")
 
     except Exception as e:
         transcriptions[task_id]["status"] = "error"
@@ -312,13 +317,8 @@ async def diarize_cloud(task_id: str):
                 time.sleep(10)
 
     try:
-        s3_key = f"transcriber/uploads/{task_id}"
-        presigned_url = s3.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': S3_BUCKET, 'Key': s3_key},
-            ExpiresIn=3600
-        )
-        
+        safe_key = task.get("s3_key", task_id)
+        s3_key = f"transcriber/uploads/{safe_key}"
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
         headers = {
             "Authorization": f"Bearer {RUNPOD_API_KEY}",
@@ -327,7 +327,14 @@ async def diarize_cloud(task_id: str):
         payload = {
             "input": {
                 "action": "diarize",
-                "audio": presigned_url,
+                "audio": s3_key,
+                "s3_creds": {
+                    "endpoint": S3_ENDPOINT,
+                    "region": S3_REGION,
+                    "access_key": os.getenv("RUNPOD_ACCESS_KEY"),
+                    "secret_key": os.getenv("RUNPOD_SECRET_KEY"),
+                    "bucket": S3_BUCKET
+                },
                 "hf_token": HF_TOKEN
             }
         }
@@ -413,12 +420,8 @@ async def transcribe_cloud(task_id: str):
                 time.sleep(10)
 
     try:
-        s3_key = f"transcriber/uploads/{task_id}"
-        presigned_url = s3.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': S3_BUCKET, 'Key': s3_key},
-            ExpiresIn=3600
-        )
+        safe_key = task.get("s3_key", task_id)
+        s3_key = f"transcriber/uploads/{safe_key}"
         
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
         headers = {
@@ -431,7 +434,14 @@ async def transcribe_cloud(task_id: str):
         payload = {
             "input": {
                 "action": "transcribe",
-                "audio": presigned_url,
+                "audio": s3_key,
+                "s3_creds": {
+                    "endpoint": S3_ENDPOINT,
+                    "region": S3_REGION,
+                    "access_key": os.getenv("RUNPOD_ACCESS_KEY"),
+                    "secret_key": os.getenv("RUNPOD_SECRET_KEY"),
+                    "bucket": S3_BUCKET
+                },
                 "timeline": timeline,
                 "hf_token": HF_TOKEN
             }
