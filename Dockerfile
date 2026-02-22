@@ -27,16 +27,16 @@ RUN pip install --no-cache-dir --upgrade \
 
 # ─── Pre-download Models ───
 # Bake models into the image for instant cold-starts
-RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')"
+RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cuda', compute_type='int8', download_root='/app/models')"
 
 ARG HF_TOKEN
 ENV HF_TOKEN=$HF_TOKEN
 
 # Russian alignment model (essential for your medical use case)
-RUN python -c "import whisperx; whisperx.load_align_model(language_code='ru', device='cpu', model_dir='/app/models')"
+RUN python -c "import whisperx; whisperx.load_align_model(language_code='ru', device='cuda', model_dir='/app/models')"
 
 # Optional: Pre-cache diarization (requires HF_TOKEN at build time or it skips)
-RUN python -c "import os; from pyannote.audio import Pipeline; token=os.environ.get('HF_TOKEN'); (Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=token) if token else print('Skipping diarization bake'))"
+RUN python -c "import os; from pyannote.audio import Pipeline; t=os.environ.get('HF_TOKEN'); (Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', token=t) if t else print('Skipping diarization bake'))"
 
 COPY handler.py /app/handler.py
 
