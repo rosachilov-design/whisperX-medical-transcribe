@@ -26,6 +26,14 @@ RUN pip install --no-cache-dir \
     pyannote.audio==3.1.1 \
     soundfile
 
+# 3. Download models during build for instant cold-starts
+# We download Whisper turbo and Pyannote 3.1
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('turbo', device='cpu', compute_type='int8')"
+
+ARG HF_TOKEN
+ENV HF_TOKEN=$HF_TOKEN
+RUN python -c "from pyannote.audio import Pipeline; Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token='$HF_TOKEN')"
+
 # Copy the serverless handler code inside
 COPY handler.py .
 
