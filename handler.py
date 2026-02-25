@@ -11,7 +11,7 @@ import pandas as pd
 # ─── Config & Init ───
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 16 
-COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
+COMPUTE_TYPE = "float32" # Use full precision to avoid glitches/cutoffs
 MODEL_DIR = "/app/models"
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
@@ -196,8 +196,8 @@ def handler(job):
         # 2. Transcription (if requested or full)
         if action in ["transcribe", "full"]:
             model = get_whisper()
-            print("📝 Transcribing...")
-            result = model.transcribe(audio, batch_size=BATCH_SIZE, language=language)
+            print("📝 Transcribing (float32, high sensitivity VAD)...")
+            result = model.transcribe(audio, batch_size=BATCH_SIZE, language=language, vad_options={"vad_onset": 0.450})
             
             # 3. Alignment
             print("🎯 Aligning...")
