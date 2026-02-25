@@ -36,19 +36,25 @@ def get_align(lang):
 
 def get_diarize():
     if MODELS["diarize"] is None:
-        print("🚀 Loading Diarization pipeline...")
-        # In WhisperX 3.8.1, the DiarizationPipeline constructor changed.
-        # We try 'use_auth_token' first (old), then 'token' (new).
+        print("🚀 Loading Diarization pipeline (pyannote/speaker-diarization-3.1)...")
+        # Explicitly use 3.1 model which handles overlapping/back-and-forth speech better
+        model_name = "pyannote/speaker-diarization-3.1"
         try:
-            # First attempt: old style
-            MODELS["diarize"] = whisperx.DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
+            MODELS["diarize"] = whisperx.DiarizationPipeline(
+                model_name=model_name, 
+                use_auth_token=HF_TOKEN, 
+                device=DEVICE
+            )
         except (AttributeError, TypeError):
-            # Second attempt: try the submodule path with the newer 'token' argument
             try:
                 from whisperx.diarize import DiarizationPipeline
-                MODELS["diarize"] = DiarizationPipeline(token=HF_TOKEN, device=DEVICE)
-            except TypeError:
-                # Catch-all: maybe it still needs use_auth_token but from the submodule
+                MODELS["diarize"] = DiarizationPipeline(
+                    model_name=model_name, 
+                    token=HF_TOKEN, 
+                    device=DEVICE
+                )
+            except Exception as e:
+                print(f"⚠️ Fallback loading diarization: {e}")
                 from whisperx.diarize import DiarizationPipeline
                 MODELS["diarize"] = DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
     return MODELS["diarize"]
@@ -119,6 +125,8 @@ def handler(job):
     audio_url = inp.get("audio") or inp.get("audio_url")
     s3_creds = inp.get("s3_creds")
     language = inp.get("language", "ru")
+    min_speakers = inp.get("min_speakers")
+    max_speakers = inp.get("max_speakers")
     
     if not audio_url:
         return {"error": "Missing audio URL"}
@@ -133,8 +141,8 @@ def handler(job):
         # 1. Diarization (if requested or full)
         if action in ["diarize", "full"]:
             pipe = get_diarize()
-            print("🎙️ Diarizing...")
-            diarize_segments = pipe(audio)
+            print(f"🎙️ Diarizing (min={min_speakers}, max={max_speakers})...")
+            diarize_segments = pipe(audio, min_speakers=min_speakers, max_speakers=max_speakers)
             
             # Format timeline for server.py compatibility
             timeline = []
