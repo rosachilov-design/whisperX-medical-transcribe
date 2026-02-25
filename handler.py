@@ -24,8 +24,15 @@ MODELS = {
 
 def get_whisper():
     if MODELS["whisper"] is None:
-        print("🚀 Loading Whisper model...")
-        MODELS["whisper"] = whisperx.load_model("large-v3", DEVICE, compute_type=COMPUTE_TYPE, download_root=MODEL_DIR)
+        print("🚀 Loading Whisper model (float32, high sensitivity VAD)...")
+        vad_options = {"vad_onset": 0.450, "vad_offset": 0.363}
+        MODELS["whisper"] = whisperx.load_model(
+            "large-v3", 
+            DEVICE, 
+            compute_type=COMPUTE_TYPE, 
+            download_root=MODEL_DIR,
+            vad_options=vad_options
+        )
     return MODELS["whisper"]
 
 def get_align(lang):
@@ -196,8 +203,8 @@ def handler(job):
         # 2. Transcription (if requested or full)
         if action in ["transcribe", "full"]:
             model = get_whisper()
-            print("📝 Transcribing (float32, high sensitivity VAD)...")
-            result = model.transcribe(audio, batch_size=BATCH_SIZE, language=language, vad_options={"vad_onset": 0.450})
+            print("📝 Transcribing...")
+            result = model.transcribe(audio, batch_size=BATCH_SIZE, language=language)
             
             # 3. Alignment
             print("🎯 Aligning...")
