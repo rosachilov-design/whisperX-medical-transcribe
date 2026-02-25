@@ -76,6 +76,62 @@ def clean_hallucinations(text: str) -> str:
         cleaned = re.sub(p, '', cleaned, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', cleaned).strip()
 
+def smooth_diarization(df, min_duration=1.0):
+    """
+    Filters out very short speaker segments and merges consecutive ones.
+    If Speaker B speaks for < min_duration between Speaker A segments, merge into Speaker A.
+    """
+    if df.empty:
+        return df
+    
+    # Sort just in case
+    df = df.sort_values(by="start").reset_index(drop=True)
+    
+    # Phase 1: Filter out flickers
+    # If a short segment is sandwiched between two segments of the SAME speaker, absorb it.
+    modified = True
+    while modified:
+        modified = False
+        new_rows = []
+        i = 0
+        while i < len(df):
+            row = df.iloc[i].copy()
+            # If not first and not last
+            if 0 < i < len(df) - 1:
+                prev_row = df.iloc[i-1]
+                next_row = df.iloc[i+1]
+                duration = row["end"] - row["start"]
+                
+                # If short AND between same speakers
+                if duration < min_duration and prev_row["speaker"] == next_row["speaker"]:
+                    # Merge prev + current + next into one big segment
+                    new_rows[-1]["end"] = next_row["end"]
+                    i += 2 # Skip current and next
+                    modified = True
+                    continue
+            
+            new_rows.append(row.to_dict())
+            i += 1
+        df = pd.DataFrame(new_rows)
+        if not modified: break
+
+    # Phase 2: Merge consecutive same-speaker segments
+    if df.empty: return df
+    merged_rows = []
+    current_row = df.iloc[0].to_dict()
+    
+    for i in range(1, len(df)):
+        next_row = df.iloc[i]
+        if next_row["speaker"] == current_row["speaker"]:
+            current_row["end"] = next_row["end"]
+        else:
+            merged_rows.append(current_row)
+            current_row = next_row.to_dict()
+    merged_rows.append(current_row)
+    
+    return pd.DataFrame(merged_rows)
+
+
 import boto3
 from botocore.config import Config
 
@@ -143,6 +199,11 @@ def handler(job):
             pipe = get_diarize()
             print(f"🎙️ Diarizing (min={min_speakers}, max={max_speakers})...")
             diarize_segments = pipe(audio, min_speakers=min_speakers, max_speakers=max_speakers)
+            
+            # Apply smoothing to remove "garbage" flickers
+            print("🧹 Smoothing diarization...")
+            diarize_segments = smooth_diarization(diarize_segments)
+
             
             # Format timeline for server.py compatibility
             timeline = []
