@@ -209,8 +209,24 @@ function loadCompletedTranscription(data) {
     lastSegmentCount = data.result.length;
 
     // Show download buttons
-    if (data.md_path) mdFilenameSpan.textContent = data.md_path;
-    if (data.docx_path) docxFilenameSpan.textContent = data.docx_path;
+    if (data.md_path) {
+        mdFilenameSpan.textContent = data.md_path;
+        document.getElementById('open-md-btn').onclick = () => {
+            const a = document.createElement('a');
+            a.href = `/download/${data.md_path}`;
+            a.download = data.md_path;
+            a.click();
+        };
+    }
+    if (data.docx_path) {
+        docxFilenameSpan.textContent = data.docx_path;
+        document.getElementById('open-docx-btn').onclick = () => {
+            const a = document.createElement('a');
+            a.href = `/download/${data.docx_path}`;
+            a.download = data.docx_path;
+            a.click();
+        };
+    }
     footerActions.classList.remove('hidden');
 
     // Collect unique speakers from the transcription
@@ -226,13 +242,17 @@ function loadCompletedTranscription(data) {
 startDiarizationBtn.onclick = async () => {
     if (!currentTaskId) return;
 
+    const minSpeakers = document.getElementById('min-speakers-input').value;
+    const maxSpeakers = document.getElementById('max-speakers-input').value;
+
     startDiarizationBtn.disabled = true;
     startDiarizationBtn.textContent = 'Diarizing...';
     progressSection.classList.remove('hidden');
     statusText.textContent = '🗣️ Identifying speakers (GPU Processing)...';
 
     try {
-        const r = await fetch(`/diarize-cloud/${currentTaskId}`, { method: 'POST' });
+        const url = `/diarize-cloud/${currentTaskId}?min_speakers=${minSpeakers}&max_speakers=${maxSpeakers}`;
+        const r = await fetch(url, { method: 'POST' });
         const cloudResult = await r.json();
         if (cloudResult.status === 'started' || cloudResult.status === 'completed') {
             startPolling();
@@ -505,6 +525,8 @@ document.querySelectorAll('.speed-btn').forEach(btn => {
     };
 });
 
+// Download buttons are handled inside loadCompletedTranscription now
+/*
 document.getElementById('open-md-btn').onclick = () => {
     const md = mdFilenameSpan.textContent;
     if (md) window.open(`/download/${md}`, '_blank');
@@ -514,6 +536,7 @@ document.getElementById('open-docx-btn').onclick = () => {
     const docx = docxFilenameSpan.textContent;
     if (docx) window.open(`/download/${docx}`, '_blank');
 };
+*/
 
 removeFileBtn.onclick = () => {
     launchScreen.classList.remove('hidden');

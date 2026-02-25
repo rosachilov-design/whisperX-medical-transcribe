@@ -76,15 +76,15 @@ def clean_hallucinations(text: str) -> str:
         cleaned = re.sub(p, '', cleaned, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', cleaned).strip()
 
-def smooth_diarization(df, min_duration=1.0):
+def smooth_diarization(df, min_duration=0.4):
     """
     Filters out very short speaker segments and merges consecutive ones.
-    If Speaker B speaks for < min_duration between Speaker A segments, merge into Speaker A.
+    Reduced min_duration to 0.4s to preserve short interjections in medical interviews.
     """
     if df.empty:
         return df
     
-    # Sort just in case
+    # Sort by start time
     df = df.sort_values(by="start").reset_index(drop=True)
     
     # Phase 1: Filter out flickers
@@ -102,7 +102,7 @@ def smooth_diarization(df, min_duration=1.0):
                 next_row = df.iloc[i+1]
                 duration = row["end"] - row["start"]
                 
-                # If short AND between same speakers
+                # If short AND between segments of the SAME speaker
                 if duration < min_duration and prev_row["speaker"] == next_row["speaker"]:
                     # Merge prev + current + next into one big segment
                     new_rows[-1]["end"] = next_row["end"]
@@ -181,8 +181,10 @@ def handler(job):
     audio_url = inp.get("audio") or inp.get("audio_url")
     s3_creds = inp.get("s3_creds")
     language = inp.get("language", "ru")
-    min_speakers = inp.get("min_speakers")
-    max_speakers = inp.get("max_speakers")
+    # Default to 2 speakers for interviews, but allow override
+    min_speakers = inp.get("min_speakers") or 2
+    max_speakers = inp.get("max_speakers") or 6
+    num_speakers = inp.get("num_speakers")
     
     if not audio_url:
         return {"error": "Missing audio URL"}
@@ -197,8 +199,8 @@ def handler(job):
         # 1. Diarization (if requested or full)
         if action in ["diarize", "full"]:
             pipe = get_diarize()
-            print(f"🎙️ Diarizing (min={min_speakers}, max={max_speakers})...")
-            diarize_segments = pipe(audio, min_speakers=min_speakers, max_speakers=max_speakers)
+            print(f"🎙️ Diarizing (min={min_speakers}, max={max_speakers}, num={num_speakers})...")
+            diarize_segments = pipe(audio, min_speakers=min_speakers, max_speakers=max_speakers, num_speakers=num_speakers)
             
             # Apply smoothing to remove "garbage" flickers
             print("🧹 Smoothing diarization...")

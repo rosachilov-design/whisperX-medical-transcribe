@@ -261,7 +261,7 @@ def upload_to_s3(file_path: Path, task_id: str):
 
 
 @app.post("/diarize-cloud/{task_id}")
-async def diarize_cloud(task_id: str):
+async def diarize_cloud(task_id: str, min_speakers: int = 2, max_speakers: int = 6):
     if task_id not in transcriptions:
         return {"error": "Task not found"}
     
@@ -335,6 +335,8 @@ async def diarize_cloud(task_id: str):
                     "secret_key": os.getenv("RUNPOD_SECRET_KEY"),
                     "bucket": S3_BUCKET
                 },
+                "min_speakers": min_speakers,
+                "max_speakers": max_speakers,
                 "hf_token": HF_TOKEN
             }
         }

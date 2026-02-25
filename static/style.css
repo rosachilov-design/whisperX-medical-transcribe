@@ -717,8 +717,41 @@ body {
     width: 90%;
     max-width: 900px;
     display: flex;
-    justify-content: center;
+    align-items: center;
+    gap: 1rem;
     padding: 0.5rem 0 1.5rem;
+}
+
+.speaker-config {
+    display: flex;
+    gap: 1rem;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 0.5rem 1rem;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+}
+
+.config-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.config-item label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.config-item input {
+    background: transparent;
+    border: none;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    width: 40px;
+    outline: none;
 }
 
 .start-transcription-btn {
