@@ -261,7 +261,7 @@ def upload_to_s3(file_path: Path, task_id: str):
 
 
 @app.post("/diarize-cloud/{task_id}")
-async def diarize_cloud(task_id: str, min_speakers: int = 2, max_speakers: int = 6):
+async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int = 10, num_speakers: int = None):
     if task_id not in transcriptions:
         return {"error": "Task not found"}
     
@@ -337,6 +337,7 @@ async def diarize_cloud(task_id: str, min_speakers: int = 2, max_speakers: int =
                 },
                 "min_speakers": min_speakers,
                 "max_speakers": max_speakers,
+                "num_speakers": num_speakers,
                 "hf_token": HF_TOKEN
             }
         }

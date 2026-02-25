@@ -244,6 +244,7 @@ startDiarizationBtn.onclick = async () => {
 
     const minSpeakers = document.getElementById('min-speakers-input').value;
     const maxSpeakers = document.getElementById('max-speakers-input').value;
+    const numSpeakers = document.getElementById('num-speakers-input').value;
 
     startDiarizationBtn.disabled = true;
     startDiarizationBtn.textContent = 'Diarizing...';
@@ -251,7 +252,8 @@ startDiarizationBtn.onclick = async () => {
     statusText.textContent = '🗣️ Identifying speakers (GPU Processing)...';
 
     try {
-        const url = `/diarize-cloud/${currentTaskId}?min_speakers=${minSpeakers}&max_speakers=${maxSpeakers}`;
+        let url = `/diarize-cloud/${currentTaskId}?min_speakers=${minSpeakers}&max_speakers=${maxSpeakers}`;
+        if (numSpeakers) url += `&num_speakers=${numSpeakers}`;
         const r = await fetch(url, { method: 'POST' });
         const cloudResult = await r.json();
         if (cloudResult.status === 'started' || cloudResult.status === 'completed') {

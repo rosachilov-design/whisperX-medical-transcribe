@@ -76,10 +76,12 @@ def clean_hallucinations(text: str) -> str:
         cleaned = re.sub(p, '', cleaned, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', cleaned).strip()
 
-def smooth_diarization(df, min_duration=0.4):
+def smooth_diarization(df):
     """
-    Filters out very short speaker segments and merges consecutive ones.
-    Reduced min_duration to 0.4s to preserve short interjections in medical interviews.
+    Only merges consecutive segments of the same speaker.
+    Removed 'flicker' filtering because in medical interviews, short 
+    interjections ("угу", "да") between segments of another speaker 
+    are actually important and shouldn't be absorbed.
     """
     if df.empty:
         return df
@@ -87,41 +89,12 @@ def smooth_diarization(df, min_duration=0.4):
     # Sort by start time
     df = df.sort_values(by="start").reset_index(drop=True)
     
-    # Phase 1: Filter out flickers
-    # If a short segment is sandwiched between two segments of the SAME speaker, absorb it.
-    modified = True
-    while modified:
-        modified = False
-        new_rows = []
-        i = 0
-        while i < len(df):
-            row = df.iloc[i].copy()
-            # If not first and not last
-            if 0 < i < len(df) - 1:
-                prev_row = df.iloc[i-1]
-                next_row = df.iloc[i+1]
-                duration = row["end"] - row["start"]
-                
-                # If short AND between segments of the SAME speaker
-                if duration < min_duration and prev_row["speaker"] == next_row["speaker"]:
-                    # Merge prev + current + next into one big segment
-                    new_rows[-1]["end"] = next_row["end"]
-                    i += 2 # Skip current and next
-                    modified = True
-                    continue
-            
-            new_rows.append(row.to_dict())
-            i += 1
-        df = pd.DataFrame(new_rows)
-        if not modified: break
-
-    # Phase 2: Merge consecutive same-speaker segments
-    if df.empty: return df
     merged_rows = []
     current_row = df.iloc[0].to_dict()
     
     for i in range(1, len(df)):
         next_row = df.iloc[i]
+        # Only merge if it's the EXACT same speaker and they are consecutive or very close
         if next_row["speaker"] == current_row["speaker"]:
             current_row["end"] = next_row["end"]
         else:
@@ -202,8 +175,8 @@ def handler(job):
             print(f"🎙️ Diarizing (min={min_speakers}, max={max_speakers}, num={num_speakers})...")
             diarize_segments = pipe(audio, min_speakers=min_speakers, max_speakers=max_speakers, num_speakers=num_speakers)
             
-            # Apply smoothing to remove "garbage" flickers
-            print("🧹 Smoothing diarization...")
+            # Apply smoothing: only merge consecutive segments of the same speaker
+            print("🧹 Merging consecutive same-speaker segments...")
             diarize_segments = smooth_diarization(diarize_segments)
 
             
@@ -234,11 +207,11 @@ def handler(job):
             # 4. Assign Speakers (if we have diarization info)
             if action == "full":
                 # We already have diarize_segments from step 1
-                result = whisperx.assign_word_speakers(diarize_segments, result)
+                result = whisperx.assign_word_speakers(diarize_segments, result, fill_nearest=True)
             elif action == "transcribe" and "timeline" in inp:
                 # User provided timeline from previous step
                 provided_timeline = pd.DataFrame(inp["timeline"])
-                result = whisperx.assign_word_speakers(provided_timeline, result)
+                result = whisperx.assign_word_speakers(provided_timeline, result, fill_nearest=True)
 
             # 5. Format Result for server.py compatibility
             final_segments = []
