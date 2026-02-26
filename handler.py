@@ -74,19 +74,19 @@ def get_diarize():
             print(f"📊 Default pyannote params: {params}")
             
             # Lower clustering threshold: default ~0.7153 is too "blind" for similar voices.
-            # 0.25 makes speaker separation very aggressive for short interjections.
-            params["clustering"]["threshold"] = 0.25
+            # 0.5 is moderately aggressive - balances between separation and accuracy.
+            params["clustering"]["threshold"] = 0.5
             
             # Lower min_duration_off: default 0.5s merges rapid turn-taking.
-            # 0.15s preserves short back-and-forth exchanges ("Да." → response).
-            params["segmentation"]["min_duration_off"] = 0.15
+            # 0.1s preserves short back-and-forth exchanges ("Да." → response).
+            params["segmentation"]["min_duration_off"] = 0.1
             
             # Lower min_duration_on: allows shorter speaker segments to be recognized.
-            # 0.3s enables detection of brief 1-2 word interjections.
-            params["segmentation"]["min_duration_on"] = 0.3
+            # 0.2s enables detection of brief 1-2 word interjections.
+            params["segmentation"]["min_duration_on"] = 0.2
             
             pyannote_pipeline.instantiate(params)
-            print(f"✅ Tuned pyannote params: clustering.threshold=0.25, min_duration_off=0.15, min_duration_on=0.3")
+            print(f"✅ Tuned pyannote params: clustering.threshold=0.5, min_duration_off=0.1, min_duration_on=0.2")
         except Exception as e:
             print(f"⚠️ Could not tune pyannote params (non-fatal): {e}")
         
@@ -284,19 +284,15 @@ def handler(job):
             # 4. Assign Speakers (if we have diarization info)
             if action == "full":
                 # We already have diarize_segments from step 1
-                # fill_nearest=False to preserve short interjection speaker labels
-                result = whisperx.assign_word_speakers(diarize_segments, result, fill_nearest=False)
+                result = whisperx.assign_word_speakers(diarize_segments, result, fill_nearest=True)
             elif action == "transcribe" and "timeline" in inp:
                 # User provided timeline from previous step
                 provided_timeline = pd.DataFrame(inp["timeline"])
-                result = whisperx.assign_word_speakers(provided_timeline, result, fill_nearest=False)
+                result = whisperx.assign_word_speakers(provided_timeline, result, fill_nearest=True)
 
-            # 5. Post-process: rescue short interjections that got absorbed
-            result_segments = rescue_short_interjections(result["segments"])
-            
-            # 6. Format Result for server.py compatibility
+            # 5. Format Result for server.py compatibility
             final_segments = []
-            for seg in result_segments:
+            for seg in result["segments"]:
                 text = clean_hallucinations(seg["text"])
                 if text:
                     final_segments.append({
