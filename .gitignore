@@ -4,6 +4,7 @@ uploads/
 "чистка/"
 *.md
 !README.md
+!glm5review.md
 *.txt
 !requirements.txt
 .env

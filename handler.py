@@ -74,15 +74,19 @@ def get_diarize():
             print(f"📊 Default pyannote params: {params}")
             
             # Lower clustering threshold: default ~0.7153 is too "blind" for similar voices.
-            # 0.35 makes speaker separation very aggressive.
-            params["clustering"]["threshold"] = 0.35
+            # 0.25 makes speaker separation very aggressive for short interjections.
+            params["clustering"]["threshold"] = 0.25
             
             # Lower min_duration_off: default 0.5s merges rapid turn-taking.
             # 0.15s preserves short back-and-forth exchanges ("Да." → response).
             params["segmentation"]["min_duration_off"] = 0.15
             
+            # Lower min_duration_on: allows shorter speaker segments to be recognized.
+            # 0.3s enables detection of brief 1-2 word interjections.
+            params["segmentation"]["min_duration_on"] = 0.3
+            
             pyannote_pipeline.instantiate(params)
-            print(f"✅ Tuned pyannote params: clustering.threshold=0.35, min_duration_off=0.15")
+            print(f"✅ Tuned pyannote params: clustering.threshold=0.25, min_duration_off=0.15, min_duration_on=0.3")
         except Exception as e:
             print(f"⚠️ Could not tune pyannote params (non-fatal): {e}")
         
