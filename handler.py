@@ -64,6 +64,28 @@ def get_diarize():
                 print(f"⚠️ Fallback loading diarization: {e}")
                 from whisperx.diarize import DiarizationPipeline
                 MODELS["diarize"] = DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
+        
+        # ═══ TUNE PYANNOTE HYPERPARAMETERS ═══
+        # Access the underlying pyannote pipeline to adjust clustering/segmentation.
+        # The DiarizationPipeline wrapper stores the pyannote Pipeline as .model
+        try:
+            pyannote_pipeline = MODELS["diarize"].model
+            params = pyannote_pipeline.parameters(instantiated=True)
+            print(f"📊 Default pyannote params: {params}")
+            
+            # Lower clustering threshold: default ~0.7153 is too "blind" for similar voices.
+            # 0.45 makes speaker separation much more aggressive.
+            params["clustering"]["threshold"] = 0.45
+            
+            # Lower min_duration_off: default 0.5s merges rapid turn-taking.
+            # 0.15s preserves short back-and-forth exchanges ("Да." → response).
+            params["segmentation"]["min_duration_off"] = 0.15
+            
+            pyannote_pipeline.instantiate(params)
+            print(f"✅ Tuned pyannote params: clustering.threshold=0.45, min_duration_off=0.15")
+        except Exception as e:
+            print(f"⚠️ Could not tune pyannote params (non-fatal): {e}")
+        
     return MODELS["diarize"]
 
 def clean_hallucinations(text: str) -> str:
@@ -161,10 +183,11 @@ def handler(job):
     audio_url = inp.get("audio") or inp.get("audio_url")
     s3_creds = inp.get("s3_creds")
     language = inp.get("language", "ru")
-    # Default to 2 speakers for interviews, but allow override
+    # Default to exactly 2 speakers for medical interviews (interviewer + respondent)
+    # Setting num_speakers=2 forces pyannote to find the 2 most distinct voice clusters
     min_speakers = inp.get("min_speakers") or 2
-    max_speakers = inp.get("max_speakers") or 6
-    num_speakers = inp.get("num_speakers")
+    max_speakers = inp.get("max_speakers") or 2
+    num_speakers = inp.get("num_speakers") or 2
     
     if not audio_url:
         return {"error": "Missing audio URL"}
