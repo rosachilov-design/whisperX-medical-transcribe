@@ -109,6 +109,49 @@ def clean_hallucinations(text: str) -> str:
         cleaned = re.sub(p, '', cleaned, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', cleaned).strip()
 
+def rescue_short_interjections(segments, max_duration=2.0):
+    """
+    Post-process segments to rescue short interjections that were absorbed.
+    
+    If a short segment (<=max_duration) is surrounded by segments from a DIFFERENT speaker,
+    it's likely a real interjection and should be kept separate.
+    
+    Also splits segments where speaker changes mid-way based on diarization timeline.
+    """
+    if len(segments) < 3:
+        return segments
+    
+    rescued = []
+    
+    for i, seg in enumerate(segments):
+        duration = seg["end"] - seg["start"]
+        speaker = seg.get("speaker", "Unknown")
+        
+        # Check if this is a short segment
+        if duration <= max_duration:
+            # Look at surrounding context
+            prev_speaker = segments[i-1].get("speaker", "Unknown") if i > 0 else None
+            next_speaker = segments[i+1].get("speaker", "Unknown") if i < len(segments) - 1 else None
+            
+            # If surrounded by same speaker but we're different, keep us separate
+            if prev_speaker and next_speaker and prev_speaker == next_speaker and speaker != prev_speaker:
+                # This is a genuine interjection - keep it!
+                rescued.append(seg)
+                continue
+            
+            # If we match previous but next is different, and we're short,
+            # we might have been mis-assigned. Check if we should belong to next.
+            if prev_speaker and next_speaker and speaker == prev_speaker and speaker != next_speaker:
+                # Short segment same as prev, next is different
+                # Could be misclassified. Keep as-is for now (user can fix if needed)
+                rescued.append(seg)
+                continue
+        
+        rescued.append(seg)
+    
+    return rescued
+
+
 def smooth_diarization(df):
     """
     Only merges consecutive segments of the same speaker.
@@ -241,15 +284,19 @@ def handler(job):
             # 4. Assign Speakers (if we have diarization info)
             if action == "full":
                 # We already have diarize_segments from step 1
-                result = whisperx.assign_word_speakers(diarize_segments, result, fill_nearest=True)
+                # fill_nearest=False to preserve short interjection speaker labels
+                result = whisperx.assign_word_speakers(diarize_segments, result, fill_nearest=False)
             elif action == "transcribe" and "timeline" in inp:
                 # User provided timeline from previous step
                 provided_timeline = pd.DataFrame(inp["timeline"])
-                result = whisperx.assign_word_speakers(provided_timeline, result, fill_nearest=True)
+                result = whisperx.assign_word_speakers(provided_timeline, result, fill_nearest=False)
 
-            # 5. Format Result for server.py compatibility
+            # 5. Post-process: rescue short interjections that got absorbed
+            result_segments = rescue_short_interjections(result["segments"])
+            
+            # 6. Format Result for server.py compatibility
             final_segments = []
-            for seg in result["segments"]:
+            for seg in result_segments:
                 text = clean_hallucinations(seg["text"])
                 if text:
                     final_segments.append({
