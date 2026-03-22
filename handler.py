@@ -109,47 +109,58 @@ def clean_hallucinations(text: str) -> str:
         cleaned = re.sub(p, '', cleaned, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', cleaned).strip()
 
-def rescue_short_interjections(segments, max_duration=2.0):
+def split_by_word_speakers(segments):
     """
-    Post-process segments to rescue short interjections that were absorbed.
+    Rebuild segments from word-level speaker assignments.
     
-    If a short segment (<=max_duration) is surrounded by segments from a DIFFERENT speaker,
-    it's likely a real interjection and should be kept separate.
+    WhisperX assigns speakers per-word, but groups words into segments with
+    a single majority-vote speaker label. This loses short interjections and
+    bleeds speaker boundaries.
     
-    Also splits segments where speaker changes mid-way based on diarization timeline.
+    This function splits segments wherever the word-level speaker changes,
+    producing tight, per-speaker segments.
     """
-    if len(segments) < 3:
-        return segments
+    new_segments = []
     
-    rescued = []
-    
-    for i, seg in enumerate(segments):
-        duration = seg["end"] - seg["start"]
-        speaker = seg.get("speaker", "Unknown")
+    for seg in segments:
+        words = seg.get("words", [])
         
-        # Check if this is a short segment
-        if duration <= max_duration:
-            # Look at surrounding context
-            prev_speaker = segments[i-1].get("speaker", "Unknown") if i > 0 else None
-            next_speaker = segments[i+1].get("speaker", "Unknown") if i < len(segments) - 1 else None
-            
-            # If surrounded by same speaker but we're different, keep us separate
-            if prev_speaker and next_speaker and prev_speaker == next_speaker and speaker != prev_speaker:
-                # This is a genuine interjection - keep it!
-                rescued.append(seg)
-                continue
-            
-            # If we match previous but next is different, and we're short,
-            # we might have been mis-assigned. Check if we should belong to next.
-            if prev_speaker and next_speaker and speaker == prev_speaker and speaker != next_speaker:
-                # Short segment same as prev, next is different
-                # Could be misclassified. Keep as-is for now (user can fix if needed)
-                rescued.append(seg)
-                continue
+        # If no word-level info, keep segment as-is
+        if not words:
+            new_segments.append(seg)
+            continue
         
-        rescued.append(seg)
+        # Group consecutive words by speaker
+        current_speaker = None
+        current_words = []
+        
+        for word in words:
+            w_speaker = word.get("speaker", seg.get("speaker", "Unknown"))
+            
+            if w_speaker != current_speaker and current_words:
+                # Flush previous group as a new segment
+                new_segments.append(_words_to_segment(current_words, current_speaker))
+                current_words = []
+            
+            current_speaker = w_speaker
+            current_words.append(word)
+        
+        # Flush last group
+        if current_words:
+            new_segments.append(_words_to_segment(current_words, current_speaker))
     
-    return rescued
+    return new_segments
+
+
+def _words_to_segment(words, speaker):
+    """Build a segment dict from a list of word dicts."""
+    texts = [w.get("word", "") for w in words]
+    return {
+        "start": words[0].get("start", 0.0),
+        "end": words[-1].get("end", words[-1].get("start", 0.0)),
+        "text": " ".join(texts).strip(),
+        "speaker": speaker,
+    }
 
 
 def smooth_diarization(df):
@@ -290,9 +301,13 @@ def handler(job):
                 provided_timeline = pd.DataFrame(inp["timeline"])
                 result = whisperx.assign_word_speakers(provided_timeline, result, fill_nearest=True)
 
-            # 5. Format Result for server.py compatibility
+            # 5. Split segments at word-level speaker boundaries
+            print("✂️ Splitting segments by word-level speaker assignments...")
+            split_segments = split_by_word_speakers(result["segments"])
+            
+            # 6. Format Result for server.py compatibility
             final_segments = []
-            for seg in result["segments"]:
+            for seg in split_segments:
                 text = clean_hallucinations(seg["text"])
                 if text:
                     final_segments.append({
