@@ -336,7 +336,7 @@ async function handleFile(file) {
     startDiarizationBtn.classList.remove('hidden');
     startDiarizationBtn.disabled = true;
     startDiarizationBtn.textContent = 'Uploading...';
-    startTranscriptionBtn.classList.remove('hidden');
+    startTranscriptionBtn.classList.add('hidden');
     startTranscriptionBtn.disabled = true;
     progressSection.classList.remove('hidden');
     statusText.textContent = '☁️ Uploading to cloud storage...';
@@ -417,12 +417,12 @@ startDiarizationBtn.onclick = async () => {
     const numSpeakers = document.getElementById('num-speakers-input').value;
 
     startDiarizationBtn.disabled = true;
-    startDiarizationBtn.textContent = 'Diarizing...';
+    startDiarizationBtn.textContent = 'Processing...';
     progressSection.classList.remove('hidden');
     statusText.textContent = '🗣️ Identifying speakers (GPU Processing)...';
 
     try {
-        let url = `/diarize-cloud/${currentTaskId}?min_speakers=${minSpeakers}&max_speakers=${maxSpeakers}`;
+        let url = `/process-cloud/${currentTaskId}?min_speakers=${minSpeakers}&max_speakers=${maxSpeakers}`;
         if (numSpeakers) url += `&num_speakers=${numSpeakers}`;
         const r = await fetch(url, { method: 'POST' });
         const cloudResult = await r.json();
@@ -499,10 +499,18 @@ function updateUI(data) {
     else if (data.status === 'uploaded') {
         // S3 upload done — Ready for Diarization
         progressSection.classList.add('hidden');
+        startDiarizationBtn.classList.remove('hidden');
         startDiarizationBtn.disabled = false;
-        startDiarizationBtn.textContent = '1. Start Diarization';
+        startDiarizationBtn.textContent = 'Start Full Transcription';
         statusText.textContent = '☁️ File uploaded to cloud. Ready to Diarize.';
+        startTranscriptionBtn.classList.add('hidden');
         clearInterval(statusInterval);
+    }
+    else if (data.status === 'processing') {
+        progressSection.classList.remove('hidden');
+        statusText.textContent = 'Diarizing, transcribing, and aligning...';
+        percentText.textContent = `${data.progress || 0}%`;
+        progressBar.style.width = `${data.progress || 0}%`;
     }
     else if (data.status === 'diarizing') {
         progressSection.classList.remove('hidden');
@@ -513,6 +521,7 @@ function updateUI(data) {
     else if (data.status === 'diarization_complete') {
         progressSection.classList.add('hidden');
         startDiarizationBtn.classList.add('hidden');
+        startTranscriptionBtn.classList.remove('hidden');
         startTranscriptionBtn.disabled = false;
         statusText.textContent = '✅ Diarization complete. Ready to Transcribe.';
         clearInterval(statusInterval);

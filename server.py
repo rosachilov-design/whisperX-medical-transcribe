@@ -160,6 +160,20 @@ def format_timestamp(seconds):
     return f"{minutes:02}:{secs:02}"
 
 
+def format_transcription_segments(result_segments):
+    formatted_segments = []
+    for seg in result_segments or []:
+        start = seg["start"]
+        formatted_segments.append({
+            "start": start,
+            "end": seg.get("end", start + 2),
+            "timestamp": format_timestamp(start),
+            "speaker": seg.get("speaker", "Unknown"),
+            "text": seg["text"]
+        })
+    return formatted_segments
+
+
 def get_json_result_name(task):
     filename = task.get("filename")
     if not filename:
@@ -434,17 +448,7 @@ async def transcribe_cloud(task_id: str):
                 
                 if status == "COMPLETED":
                     output = data["output"]
-                    formatted_segments = []
-                    for seg in output.get("result", []):
-                        formatted_segments.append({
-                            "start": seg["start"],
-                            "end": seg.get("end", seg["start"] + 2),
-                            "timestamp": format_timestamp(seg["start"]),
-                            "speaker": seg.get("speaker", "Unknown"),
-                            "text": seg["text"]
-                        })
-                    
-                    transcriptions[task_id]["result"] = formatted_segments
+                    transcriptions[task_id]["result"] = format_transcription_segments(output.get("result", []))
                     transcriptions[task_id]["status"] = "completed"
                     transcriptions[task_id]["progress"] = 100
                     persist_task_json(task_id)
@@ -522,6 +526,106 @@ async def transcribe_cloud(task_id: str):
 # ═══════════════════════════════════════════
 #  API ENDPOINTS
 # ═══════════════════════════════════════════
+
+@app.post("/process-cloud/{task_id}")
+async def process_cloud(task_id: str, min_speakers: int = 1, max_speakers: int = 10, num_speakers: int = None):
+    """Trigger the full serverless pipeline in a single RunPod job."""
+    if task_id not in transcriptions:
+        return {"error": "Task not found"}
+
+    task = transcriptions[task_id]
+    if not RUNPOD_ENDPOINT_ID:
+        return {"error": "RUNPOD_ENDPOINT_ID not set in .env"}
+
+    def poll_job(job_id, task_id):
+        headers = {
+            "Authorization": f"Bearer {RUNPOD_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        status_url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id}"
+
+        while True:
+            try:
+                resp = http_requests.get(status_url, headers=headers)
+                data = resp.json()
+                status = data.get("status")
+
+                if status == "COMPLETED":
+                    output = data["output"]
+                    transcriptions[task_id]["timeline"] = output.get("timeline", [])
+                    transcriptions[task_id]["result"] = format_transcription_segments(output.get("result", []))
+                    transcriptions[task_id]["status"] = "completed"
+                    transcriptions[task_id]["progress"] = 100
+                    persist_task_json(task_id)
+                    print("Serverless full pipeline done: " + task_id)
+                    break
+                elif status in ["FAILED", "CANCELLED"]:
+                    error_msg = data.get("error", "Job failed")
+                    transcriptions[task_id]["status"] = "error"
+                    transcriptions[task_id]["error"] = error_msg
+                    print(f"Serverless job failed ({job_id}): {error_msg}")
+                    break
+
+                if status == "IN_PROGRESS":
+                    transcriptions[task_id]["status"] = "processing"
+                    transcriptions[task_id]["progress"] = 50
+                elif status == "IN_QUEUE":
+                    transcriptions[task_id]["status"] = "processing"
+                    transcriptions[task_id]["progress"] = 20
+
+                time.sleep(5)
+            except Exception as e:
+                print(f"Polling error for job {job_id}: {e}")
+                time.sleep(10)
+
+    try:
+        safe_key = task.get("s3_key", task_id)
+        s3_key = f"transcriber/uploads/{safe_key}"
+
+        url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
+        headers = {
+            "Authorization": f"Bearer {RUNPOD_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "input": {
+                "action": "full",
+                "audio": s3_key,
+                "s3_creds": {
+                    "endpoint": S3_ENDPOINT,
+                    "region": S3_REGION,
+                    "access_key": os.getenv("RUNPOD_ACCESS_KEY"),
+                    "secret_key": os.getenv("RUNPOD_SECRET_KEY"),
+                    "bucket": S3_BUCKET
+                },
+                "min_speakers": min_speakers,
+                "max_speakers": max_speakers,
+                "num_speakers": num_speakers,
+                "hf_token": HF_TOKEN
+            }
+        }
+
+        resp = http_requests.post(url, headers=headers, json=payload)
+        resp_data = resp.json()
+        job_id = resp_data.get("id")
+
+        if job_id:
+            task["status"] = "processing"
+            task["progress"] = 10
+            task["job_id"] = job_id
+
+            threading.Thread(target=poll_job, args=(job_id, task_id), daemon=True).start()
+            print(f"Serverless full pipeline job started: {job_id} for {task_id}")
+            return {"status": "started", "job_id": job_id}
+        else:
+            return {"status": "error", "error": f"Failed to start job: {resp_data}"}
+
+    except Exception as e:
+        task["status"] = "error"
+        task["error"] = str(e)
+        return {"status": "error", "error": str(e)}
+
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):

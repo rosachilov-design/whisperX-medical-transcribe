@@ -15,6 +15,7 @@ COMPUTE_TYPE = "float32" # Use full precision to avoid glitches/cutoffs
 MODEL_DIR = "/app/models"
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
+UNKNOWN_SPEAKER = "Unknown"
 
 # Global cache for models
 MODELS = {
@@ -87,25 +88,82 @@ def get_diarize():
             pyannote_pipeline = MODELS["diarize"].model
             params = pyannote_pipeline.parameters(instantiated=True)
             print(f"📊 Default pyannote params: {params}")
-            
-            # Lower clustering threshold: default ~0.7153 is too "blind" for similar voices.
-            # 0.5 is moderately aggressive - balances between separation and accuracy.
-            params["clustering"]["threshold"] = 0.5
-            
-            # Lower min_duration_off: default 0.5s merges rapid turn-taking.
-            # 0.1s preserves short back-and-forth exchanges ("Да." → response).
-            params["segmentation"]["min_duration_off"] = 0.1
-            
-            # Lower min_duration_on: allows shorter speaker segments to be recognized.
-            # 0.2s enables detection of brief 1-2 word interjections.
-            params["segmentation"]["min_duration_on"] = 0.2
-            
+
+            changed = []
+            clustering = params.get("clustering")
+            if isinstance(clustering, dict) and "threshold" in clustering:
+                clustering["threshold"] = 0.42
+                changed.append("clustering.threshold=0.42")
+
+            segmentation = params.get("segmentation")
+            if isinstance(segmentation, dict):
+                if "min_duration_off" in segmentation:
+                    segmentation["min_duration_off"] = 0.05
+                    changed.append("min_duration_off=0.05")
+                if "min_duration_on" in segmentation:
+                    segmentation["min_duration_on"] = 0.12
+                    changed.append("min_duration_on=0.12")
+
             pyannote_pipeline.instantiate(params)
-            print(f"✅ Tuned pyannote params: clustering.threshold=0.5, min_duration_off=0.1, min_duration_on=0.2")
+            if changed:
+                print(f"✅ Tuned pyannote params: {', '.join(changed)}")
+            else:
+                print("⚠️ Pyannote params loaded, but overlap-specific keys were not available to tune.")
         except Exception as e:
             print(f"⚠️ Could not tune pyannote params (non-fatal): {e}")
         
     return MODELS["diarize"]
+
+
+def _normalize_speaker_label(label):
+    if label is None:
+        return UNKNOWN_SPEAKER
+
+    if isinstance(label, float) and pd.isna(label):
+        return UNKNOWN_SPEAKER
+
+    text = str(label).strip()
+    if not text or text.lower() == "nan":
+        return UNKNOWN_SPEAKER
+
+    return text
+
+
+def _fill_unlabeled_word_runs(words):
+    """
+    Conservatively fill runs of unlabeled words only when both surrounding
+    labeled words agree on the speaker. Everything else stays Unknown.
+    """
+    if not words:
+        return words
+
+    normalized_words = []
+    for word in words:
+        normalized_word = dict(word)
+        normalized_word["speaker"] = _normalize_speaker_label(word.get("speaker"))
+        normalized_words.append(normalized_word)
+
+    run_start = None
+    for index, word in enumerate(normalized_words):
+        if word["speaker"] == UNKNOWN_SPEAKER:
+            if run_start is None:
+                run_start = index
+            continue
+
+        if run_start is None:
+            continue
+
+        prev_index = run_start - 1
+        prev_speaker = normalized_words[prev_index]["speaker"] if prev_index >= 0 else UNKNOWN_SPEAKER
+        next_speaker = word["speaker"]
+
+        if prev_speaker != UNKNOWN_SPEAKER and prev_speaker == next_speaker:
+            for fill_index in range(run_start, index):
+                normalized_words[fill_index]["speaker"] = prev_speaker
+
+        run_start = None
+
+    return normalized_words
 
 def clean_hallucinations(text: str) -> str:
     """Medical-focused Russian hallucination filter."""
@@ -142,15 +200,19 @@ def split_by_word_speakers(segments):
         
         # If no word-level info, keep segment as-is
         if not words:
-            new_segments.append(seg)
+            normalized_seg = dict(seg)
+            normalized_seg["speaker"] = _normalize_speaker_label(seg.get("speaker"))
+            new_segments.append(normalized_seg)
             continue
+
+        words = _fill_unlabeled_word_runs(words)
         
         # Group consecutive words by speaker
         current_speaker = None
         current_words = []
         
         for word in words:
-            w_speaker = word.get("speaker", seg.get("speaker", "Unknown"))
+            w_speaker = _normalize_speaker_label(word.get("speaker"))
             
             if w_speaker != current_speaker and current_words:
                 # Flush previous group as a new segment
@@ -174,7 +236,7 @@ def _words_to_segment(words, speaker):
         "start": words[0].get("start", 0.0),
         "end": words[-1].get("end", words[-1].get("start", 0.0)),
         "text": " ".join(texts).strip(),
-        "speaker": speaker,
+        "speaker": _normalize_speaker_label(speaker),
     }
 
 
@@ -277,10 +339,6 @@ def handler(job):
             pipe = get_diarize()
             print(f"🎙️ Diarizing (min={min_speakers}, max={max_speakers}, num={num_speakers})...")
             diarize_segments = pipe(audio, min_speakers=min_speakers, max_speakers=max_speakers, num_speakers=num_speakers)
-            
-            # Apply smoothing: only merge consecutive segments of the same speaker
-            print("🧹 Merging consecutive same-speaker segments...")
-            diarize_segments = smooth_diarization(diarize_segments)
 
             
             # Format timeline for server.py compatibility
@@ -310,11 +368,11 @@ def handler(job):
             # 4. Assign Speakers (if we have diarization info)
             if action == "full":
                 # We already have diarize_segments from step 1
-                result = whisperx.assign_word_speakers(diarize_segments, result, fill_nearest=True)
+                result = whisperx.assign_word_speakers(diarize_segments, result, fill_nearest=False)
             elif action == "transcribe" and "timeline" in inp:
                 # User provided timeline from previous step
                 provided_timeline = pd.DataFrame(inp["timeline"])
-                result = whisperx.assign_word_speakers(provided_timeline, result, fill_nearest=True)
+                result = whisperx.assign_word_speakers(provided_timeline, result, fill_nearest=False)
 
             # 5. Split segments at word-level speaker boundaries
             print("✂️ Splitting segments by word-level speaker assignments...")
