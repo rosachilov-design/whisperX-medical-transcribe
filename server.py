@@ -29,7 +29,6 @@ import shutil
 
 import boto3
 from botocore.config import Config
-from docx import Document
 from dotenv import load_dotenv
 from preprocess_for_transcription import build_filter_chain
 
@@ -87,13 +86,13 @@ pod_config = {
 transcriptions = {}
 
 def download_results_from_s3():
-    """Check S3 for any finished results (.json, .md, .docx) and pull them to local uploads."""
+    """Check S3 for finished JSON results and pull them to local uploads."""
     try:
         response = s3.list_objects_v2(Bucket=S3_BUCKET)
         if 'Contents' not in response:
             return
 
-        result_exts = {".json", ".md", ".docx"}
+        result_exts = {".json"}
         found_new = False
         for obj in response['Contents']:
             s3_key = obj['Key']
@@ -161,6 +160,21 @@ def format_timestamp(seconds):
     return f"{minutes:02}:{secs:02}"
 
 
+def get_json_result_name(task):
+    filename = task.get("filename")
+    if not filename:
+        return None
+    return Path(filename).with_suffix(".json").name
+
+
+def serialize_task(task):
+    serialized = dict(task)
+    json_name = get_json_result_name(task)
+    if json_name:
+        serialized["json_path"] = json_name
+    return serialized
+
+
 def clean_hallucinations(text: str) -> str:
     """Remove common Russian Whisper hallucinations."""
     hallucination_patterns = [
@@ -180,43 +194,10 @@ def clean_hallucinations(text: str) -> str:
     return cleaned.strip()
 
 
-def generate_docx(task_id):
-    """Generate a .docx file from the transcription segments."""
-    if task_id not in transcriptions:
-        return None
+def persist_task_json(task_id):
+    """Persist the current transcription state as JSON."""
     task = transcriptions[task_id]
-    file_path = UPLOAD_DIR / task["filename"]
-    docx_file_path = file_path.with_suffix(".docx")
-
-    doc = Document()
-    doc.add_heading(f"Transcription: {task['filename']}", 0)
-    for seg in task["result"]:
-        p = doc.add_paragraph()
-        ts_run = p.add_run(f"[{seg['timestamp']}] {seg['speaker']}: ")
-        ts_run.bold = True
-        p.add_run(seg['text'])
-    doc.save(docx_file_path)
-    return docx_file_path.name
-
-
-def regenerate_files(task_id):
-    """Re-save .md, .docx, and .json after speaker edits."""
-    task = transcriptions[task_id]
-    file_path = UPLOAD_DIR / task["filename"]
-
-    # MD
-    md_file_path = file_path.with_suffix(".md")
-    md_content = f"# Transcription: {task['filename']}\n\n"
-    for seg in task["result"]:
-        md_content += f"**[{seg['timestamp']}] {seg['speaker']}:** {seg['text']}\n\n"
-    with open(md_file_path, "w", encoding="utf-8") as f:
-        f.write(md_content)
-
-    # DOCX
-    generate_docx(task_id)
-
-    # JSON state
-    state_file = file_path.with_suffix(".json")
+    state_file = UPLOAD_DIR / get_json_result_name(task)
     with open(state_file, "w", encoding="utf-8") as f:
         json.dump(task, f, indent=2, ensure_ascii=False)
 
@@ -359,9 +340,7 @@ async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
                     transcriptions[task_id]["progress"] = 100
                     
                     # Cache the diarization back to JSON
-                    json_path = UPLOAD_DIR / Path(task_id).with_suffix(".json")
-                    with open(json_path, "w", encoding="utf-8") as f:
-                        json.dump(transcriptions[task_id], f, indent=2, ensure_ascii=False)
+                    persist_task_json(task_id)
                         
                     print(f"✅ Serverless Diarization Done: {task_id}")
                     break
@@ -468,7 +447,7 @@ async def transcribe_cloud(task_id: str):
                     transcriptions[task_id]["result"] = formatted_segments
                     transcriptions[task_id]["status"] = "completed"
                     transcriptions[task_id]["progress"] = 100
-                    regenerate_files(task_id)
+                    persist_task_json(task_id)
                     print(f"✅ Serverless Transcription Done: {task_id}")
                     break
                 elif status in ["FAILED", "CANCELLED"]:
@@ -646,7 +625,7 @@ async def check_transcription(filename: str):
     """Check if a transcription JSON already exists for this audio file."""
     # Check in-memory first
     if filename in transcriptions and transcriptions[filename].get("status") == "completed":
-        return transcriptions[filename]
+        return serialize_task(transcriptions[filename])
 
     # Check on disk
     json_path = UPLOAD_DIR / Path(filename).with_suffix(".json")
@@ -655,7 +634,7 @@ async def check_transcription(filename: str):
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 transcriptions[filename] = data
-                return data
+                return serialize_task(data)
         except:
             pass
 
@@ -668,7 +647,7 @@ async def get_status(task_id: str):
     task = transcriptions.get(task_id)
     if not task:
         return {"status": "not_found"}
-    return task
+    return serialize_task(task)
 
 
 @app.get("/audio/{filename}")
@@ -679,36 +658,18 @@ async def get_audio(filename: str):
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
-    """Download .md or .docx result files."""
+    """Download generated result or audio files."""
     path = UPLOAD_DIR / filename
     if path.exists():
-        media_type = "text/markdown"
-        if filename.endswith(".docx"):
-            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        media_type = "application/octet-stream"
+        if filename.endswith(".json"):
+            media_type = "application/json"
         elif filename.endswith(".m4a"):
             media_type = "audio/mp4"
         elif filename.endswith(".wav"):
             media_type = "audio/wav"
         return FileResponse(path, media_type=media_type, filename=filename)
     return {"error": "File not found"}
-
-
-@app.post("/save/{task_id}")
-async def save_files(task_id: str):
-    """Generate and save .md and .docx from the current transcription state."""
-    if task_id not in transcriptions:
-        return {"error": "Task not found"}
-
-    task = transcriptions[task_id]
-    if not task.get("result"):
-        return {"error": "No transcription data to save"}
-
-    regenerate_files(task_id)
-    return {
-        "status": "saved",
-        "md_path": Path(task["filename"]).with_suffix(".md").name,
-        "docx_path": Path(task["filename"]).with_suffix(".docx").name,
-    }
 
 
 class UpdateSpeakerRequest(BaseModel):
@@ -730,7 +691,7 @@ async def update_speaker(req: UpdateSpeakerRequest):
                 if seg["speaker"] == old_name:
                     seg["speaker"] = new_name
 
-            regenerate_files(req.task_id)
+            persist_task_json(req.task_id)
             return {"status": "success"}
 
     return {"status": "error", "message": "Task or segment not found"}

@@ -14,6 +14,7 @@ BATCH_SIZE = 16
 COMPUTE_TYPE = "float32" # Use full precision to avoid glitches/cutoffs
 MODEL_DIR = "/app/models"
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
+DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
 
 # Global cache for models
 MODELS = {
@@ -41,29 +42,43 @@ def get_align(lang):
         MODELS["align"][lang] = whisperx.load_align_model(language_code=lang, device=DEVICE, model_dir=MODEL_DIR)
     return MODELS["align"][lang]
 
+def _build_diarization_pipeline(model_name):
+    if not HF_TOKEN:
+        raise RuntimeError(
+            f"HF_TOKEN is required for diarization. Set HF_TOKEN and accept access to {model_name} on Hugging Face."
+        )
+
+    load_attempts = (
+        (getattr(whisperx, "DiarizationPipeline", None), {"model_name": model_name, "use_auth_token": HF_TOKEN, "device": DEVICE}),
+        (None, {"model_name": model_name, "token": HF_TOKEN, "device": DEVICE}),
+        (None, {"model_name": model_name, "use_auth_token": HF_TOKEN, "device": DEVICE}),
+    )
+
+    last_error = None
+    for loader, kwargs in load_attempts:
+        try:
+            if loader is None:
+                from whisperx.diarize import DiarizationPipeline
+                loader = DiarizationPipeline
+            return loader(**kwargs)
+        except (AttributeError, TypeError) as exc:
+            last_error = exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not load diarization model {model_name}. "
+                f"Verify HF_TOKEN is valid and that this account accepted access to {model_name}. "
+                f"Original error: {exc}"
+            ) from exc
+
+    raise RuntimeError(
+        f"WhisperX diarization loader is incompatible with {model_name}. "
+        f"Last loader error: {last_error}"
+    ) from last_error
+
 def get_diarize():
     if MODELS["diarize"] is None:
-        print("🚀 Loading Diarization pipeline (pyannote/speaker-diarization-3.1)...")
-        # Explicitly use 3.1 model which handles overlapping/back-and-forth speech better
-        model_name = "pyannote/speaker-diarization-3.1"
-        try:
-            MODELS["diarize"] = whisperx.DiarizationPipeline(
-                model_name=model_name, 
-                use_auth_token=HF_TOKEN, 
-                device=DEVICE
-            )
-        except (AttributeError, TypeError):
-            try:
-                from whisperx.diarize import DiarizationPipeline
-                MODELS["diarize"] = DiarizationPipeline(
-                    model_name=model_name, 
-                    token=HF_TOKEN, 
-                    device=DEVICE
-                )
-            except Exception as e:
-                print(f"⚠️ Fallback loading diarization: {e}")
-                from whisperx.diarize import DiarizationPipeline
-                MODELS["diarize"] = DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
+        print(f"🚀 Loading Diarization pipeline ({DIARIZATION_MODEL})...")
+        MODELS["diarize"] = _build_diarization_pipeline(DIARIZATION_MODEL)
         
         # ═══ TUNE PYANNOTE HYPERPARAMETERS ═══
         # Access the underlying pyannote pipeline to adjust clustering/segmentation.

@@ -17,8 +17,8 @@ const playPauseBtn = document.getElementById('play-pause');
 const playIcon = document.getElementById('play-icon');
 const transcriptionContent = document.getElementById('transcription-content');
 const footerActions = document.getElementById('footer-actions');
-const mdFilenameSpan = document.getElementById('md-filename-span');
-const docxFilenameSpan = document.getElementById('docx-filename-span');
+const jsonFilenameSpan = document.getElementById('json-filename-span');
+const openJsonBtn = document.getElementById('open-json-btn');
 const removeFileBtn = document.getElementById('remove-file');
 const currentTimeDisplay = document.getElementById('current-time');
 const durationDisplay = document.getElementById('duration');
@@ -298,6 +298,12 @@ function formatWait(totalSeconds) {
     return `${secs}s`;
 }
 
+function getJsonFilename(data) {
+    if (data.json_path) return data.json_path;
+    const filename = data.filename || currentTaskId || 'transcript';
+    return filename.includes('.') ? filename.replace(/\.[^.]+$/, '.json') : `${filename}.json`;
+}
+
 let knownSpeakers = [];
 
 async function handleFile(file) {
@@ -383,25 +389,14 @@ function loadCompletedTranscription(data) {
     });
     lastSegmentCount = data.result.length;
 
-    // Show download buttons
-    if (data.md_path) {
-        mdFilenameSpan.textContent = data.md_path;
-        document.getElementById('open-md-btn').onclick = () => {
-            const a = document.createElement('a');
-            a.href = `/download/${data.md_path}`;
-            a.download = data.md_path;
-            a.click();
-        };
-    }
-    if (data.docx_path) {
-        docxFilenameSpan.textContent = data.docx_path;
-        document.getElementById('open-docx-btn').onclick = () => {
-            const a = document.createElement('a');
-            a.href = `/download/${data.docx_path}`;
-            a.download = data.docx_path;
-            a.click();
-        };
-    }
+    const jsonPath = getJsonFilename(data);
+    jsonFilenameSpan.textContent = jsonPath;
+    openJsonBtn.onclick = () => {
+        const a = document.createElement('a');
+        a.href = `/download/${jsonPath}`;
+        a.download = jsonPath;
+        a.click();
+    };
     footerActions.classList.remove('hidden');
 
     // Collect unique speakers from the transcription
@@ -702,25 +697,13 @@ document.querySelectorAll('.speed-btn').forEach(btn => {
     };
 });
 
-// Download buttons are handled inside loadCompletedTranscription now
-/*
-document.getElementById('open-md-btn').onclick = () => {
-    const md = mdFilenameSpan.textContent;
-    if (md) window.open(`/download/${md}`, '_blank');
-};
-
-document.getElementById('open-docx-btn').onclick = () => {
-    const docx = docxFilenameSpan.textContent;
-    if (docx) window.open(`/download/${docx}`, '_blank');
-};
-*/
-
 removeFileBtn.onclick = () => {
     launchScreen.classList.remove('hidden');
     mainInterface.classList.add('hidden');
     if (wavesurfer) wavesurfer.destroy();
     currentTaskId = null;
     segments = [];
+    footerActions.classList.add('hidden');
     transcriptionContent.innerHTML = '<div class="placeholder-text">Your transcription will appear here...</div>';
 };
 
