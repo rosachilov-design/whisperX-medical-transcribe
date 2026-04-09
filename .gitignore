@@ -1,7 +1,7 @@
 uploads/
-"logs github/"
-"Улучшения/"
-"чистка/"
+logs-github/
+betterment/
+cleanup/
 *.md
 !README.md
 !glm5review.md
