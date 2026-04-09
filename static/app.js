@@ -26,6 +26,13 @@ const startDiarizationBtn = document.getElementById('start-diarization-btn');
 const startTranscriptionBtn = document.getElementById('start-transcription-btn');
 const newSessionBtn = document.getElementById('new-session-btn');
 const progressSection = document.getElementById('progress-section');
+const improveAudioDropzone = document.getElementById('improve-audio-dropzone');
+const improveAudioInput = document.getElementById('improve-audio-input');
+const improveAudioBrowseBtn = document.getElementById('improve-audio-browse');
+const improveAudioStatus = document.getElementById('improve-audio-status');
+const s3FileList = document.getElementById('s3-file-list');
+const s3BrowserStatus = document.getElementById('s3-browser-status');
+const refreshS3Btn = document.getElementById('refresh-s3-btn');
 
 // Pod Control Elements
 const setupPodBtn = document.getElementById('setup-pod-btn');
@@ -53,7 +60,10 @@ document.addEventListener('dragover', (e) => {
 });
 
 document.addEventListener('dragleave', (e) => {
-    if (e.relatedTarget === null) dropzone.classList.remove('dragging');
+    if (e.relatedTarget === null) {
+        dropzone.classList.remove('dragging');
+        improveAudioDropzone.classList.remove('dragging');
+    }
 });
 
 document.addEventListener('drop', (e) => {
@@ -73,6 +83,171 @@ dropzone.addEventListener('click', (e) => {
 fileInput.addEventListener('change', () => {
     if (fileInput.files.length > 0) handleFile(fileInput.files[0]);
 });
+
+improveAudioDropzone.addEventListener('click', () => improveAudioInput.click());
+improveAudioBrowseBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    improveAudioInput.click();
+});
+improveAudioInput.addEventListener('change', () => {
+    if (improveAudioInput.files.length > 0) handleImproveAudio(improveAudioInput.files[0]);
+});
+improveAudioDropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropzone.classList.remove('dragging');
+    improveAudioDropzone.classList.add('dragging');
+});
+improveAudioDropzone.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!improveAudioDropzone.contains(e.relatedTarget)) {
+        improveAudioDropzone.classList.remove('dragging');
+    }
+});
+improveAudioDropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    improveAudioDropzone.classList.remove('dragging');
+    const files = e.dataTransfer.files;
+    if (files.length > 0) handleImproveAudio(files[0]);
+});
+
+function setImproveAudioStatus(message, tone = 'muted') {
+    improveAudioStatus.textContent = message;
+    improveAudioStatus.className = `improve-audio-status ${tone}`;
+}
+
+async function handleImproveAudio(file) {
+    if (!file.name.toLowerCase().endsWith('.m4a')) {
+        setImproveAudioStatus('Please drop an .m4a file here.', 'error');
+        return;
+    }
+
+    improveAudioDropzone.classList.remove('dragging');
+    improveAudioDropzone.classList.add('processing');
+    setImproveAudioStatus('Improving audio quality...', 'working');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch('/improve-audio', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok || data.error) {
+            throw new Error(data.error || 'Audio improvement failed.');
+        }
+
+        const a = document.createElement('a');
+        a.href = data.download_url;
+        a.download = data.filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+        setImproveAudioStatus(`Done. Downloading ${data.filename}`, 'success');
+    } catch (err) {
+        setImproveAudioStatus(`Error: ${err.message}`, 'error');
+    } finally {
+        improveAudioDropzone.classList.remove('processing');
+        improveAudioInput.value = '';
+    }
+}
+
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = bytes;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024;
+        unitIndex += 1;
+    }
+    return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function formatS3Date(value) {
+    if (!value) return 'Unknown time';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+}
+
+function renderS3Files(files) {
+    if (!files.length) {
+        s3FileList.innerHTML = '<div class="s3-empty-state">No files found in the bucket.</div>';
+        return;
+    }
+
+    s3FileList.innerHTML = '';
+    files.forEach((file) => {
+        const row = document.createElement('div');
+        row.className = 's3-file-row';
+        row.innerHTML = `
+            <div class="s3-file-meta">
+                <div class="s3-file-name">${file.name}</div>
+                <div class="s3-file-key">${file.key}</div>
+                <div class="s3-file-info">${formatBytes(file.size)} · ${formatS3Date(file.last_modified)}</div>
+            </div>
+            <button class="s3-delete-btn" type="button">Delete</button>
+        `;
+
+        row.querySelector('.s3-delete-btn').addEventListener('click', () => {
+            deleteS3File(file.key, file.name);
+        });
+        s3FileList.appendChild(row);
+    });
+}
+
+async function loadS3Files() {
+    s3BrowserStatus.textContent = 'Loading files from S3...';
+    refreshS3Btn.disabled = true;
+
+    try {
+        const response = await fetch('/s3-files');
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok || data.error) {
+            throw new Error(data.error || 'Failed to load S3 files.');
+        }
+
+        renderS3Files(data.files || []);
+        s3BrowserStatus.textContent = `${(data.files || []).length} file(s) currently on the server.`;
+    } catch (err) {
+        s3FileList.innerHTML = '<div class="s3-empty-state">Could not load bucket contents.</div>';
+        s3BrowserStatus.textContent = `Error: ${err.message}`;
+    } finally {
+        refreshS3Btn.disabled = false;
+    }
+}
+
+async function deleteS3File(key, name) {
+    if (!confirm(`Delete ${name} from the S3 bucket?`)) return;
+
+    s3BrowserStatus.textContent = `Deleting ${name}...`;
+
+    try {
+        const response = await fetch('/delete-s3-file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key })
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok || data.error) {
+            throw new Error(data.error || 'Delete failed.');
+        }
+
+        await loadS3Files();
+    } catch (err) {
+        s3BrowserStatus.textContent = `Error: ${err.message}`;
+    }
+}
+
 function initWaveSurfer(url) {
     if (wavesurfer) wavesurfer.destroy();
 
@@ -682,9 +857,14 @@ stopPodBtn.onclick = async () => {
     await fetch('/stop-pod', { method: 'POST' });
 };
 
+refreshS3Btn.onclick = () => {
+    loadS3Files();
+};
+
 // Start polling and load config on load
 startPodPolling();
 loadConfig();
+loadS3Files();
 
 window.seekTo = seekTo;
 window.setSegmentSpeaker = setSegmentSpeaker;

@@ -139,6 +139,34 @@
                 </div>
 
             </div>
+
+            <div class="launch-utility-bar">
+                <div id="improve-audio-dropzone" class="audio-improve-dropzone">
+                    <div class="improve-audio-copy">
+                        <span class="improve-audio-title">Improve Audio Quality</span>
+                        <span class="improve-audio-sub">Drop an M4A here to reduce bass muddiness before transcription</span>
+                    </div>
+                    <button id="improve-audio-browse" class="utility-browse-btn" type="button">Choose M4A</button>
+                    <input type="file" id="improve-audio-input" accept=".m4a,audio/mp4" style="display:none">
+                </div>
+                <div id="improve-audio-status" class="improve-audio-status hidden"></div>
+            </div>
+
+            <div class="launch-s3-browser">
+                <div class="s3-browser-card">
+                    <div class="s3-browser-header">
+                        <div>
+                            <h3>S3 File Browser</h3>
+                            <p>Live file list from the RunPod bucket. Refresh on page load and delete when needed.</p>
+                        </div>
+                        <button id="refresh-s3-btn" class="s3-refresh-btn" type="button">Refresh</button>
+                    </div>
+                    <div id="s3-browser-status" class="s3-browser-status">Loading files...</div>
+                    <div id="s3-file-list" class="s3-file-list">
+                        <div class="s3-empty-state">Loading files from the server...</div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- ═══════════════════════════════════════════════ -->

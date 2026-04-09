@@ -16,6 +16,7 @@ import sys
 import io
 import json
 import re
+import subprocess
 import threading
 import time
 import uuid
@@ -30,6 +31,7 @@ import boto3
 from botocore.config import Config
 from docx import Document
 from dotenv import load_dotenv
+from preprocess_for_transcription import build_filter_chain
 
 # Load .env credentials
 load_dotenv()
@@ -217,6 +219,72 @@ def regenerate_files(task_id):
     state_file = file_path.with_suffix(".json")
     with open(state_file, "w", encoding="utf-8") as f:
         json.dump(task, f, indent=2, ensure_ascii=False)
+
+
+def improve_audio_for_transcription(input_path: Path, output_path: Path):
+    """Create a cleaned M4A optimized for speech transcription."""
+    filter_chain = build_filter_chain("mild", denoise=True)
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-af",
+        filter_chain,
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "96k",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        error_text = result.stderr.strip() or result.stdout.strip() or "Unknown ffmpeg error"
+        raise RuntimeError(error_text)
+
+
+def list_s3_bucket_files():
+    """Return all actual objects currently present in the configured S3 bucket."""
+    files = []
+    continuation_token = None
+
+    while True:
+        params = {"Bucket": S3_BUCKET}
+        if continuation_token:
+            params["ContinuationToken"] = continuation_token
+
+        response = s3.list_objects_v2(**params)
+        for entry in response.get("Contents", []):
+            key = entry.get("Key", "")
+            if not key or key.endswith("/"):
+                continue
+            files.append({
+                "key": key,
+                "name": Path(key).name,
+                "size": entry.get("Size", 0),
+                "last_modified": entry.get("LastModified").isoformat() if entry.get("LastModified") else None,
+            })
+
+        if not response.get("IsTruncated"):
+            break
+        continuation_token = response.get("NextContinuationToken")
+
+    files.sort(key=lambda item: item["last_modified"] or "", reverse=True)
+    return files
 
 
 # ─── S3 Upload (Background Thread) ───
@@ -511,6 +579,68 @@ async def upload_file(file: UploadFile = File(...)):
     return {"task_id": task_id}
 
 
+@app.post("/improve-audio")
+async def improve_audio(file: UploadFile = File(...)):
+    """Clean a bass-heavy M4A into a transcription-ready M4A."""
+    original_name = Path(file.filename or "audio.m4a")
+    if original_name.suffix.lower() != ".m4a":
+        return JSONResponse(status_code=400, content={"error": "Only .m4a files are supported here."})
+
+    temp_input_path = UPLOAD_DIR / f"_improve_{uuid.uuid4().hex}.m4a"
+    output_name = f"{original_name.stem}_improved.m4a"
+    output_path = UPLOAD_DIR / output_name
+
+    if output_path.exists():
+        output_name = f"{original_name.stem}_improved_{uuid.uuid4().hex[:6]}.m4a"
+        output_path = UPLOAD_DIR / output_name
+
+    try:
+        with open(temp_input_path, "wb") as buffer:
+            buffer.write(await file.read())
+
+        improve_audio_for_transcription(temp_input_path, output_path)
+        print(f"🎚️ Improved audio created: {output_name}")
+        return {
+            "status": "success",
+            "filename": output_name,
+            "download_url": f"/download/{output_name}",
+        }
+    except Exception as e:
+        if output_path.exists():
+            output_path.unlink()
+        return JSONResponse(status_code=500, content={"error": f"Audio improvement failed: {e}"})
+    finally:
+        if temp_input_path.exists():
+            temp_input_path.unlink()
+
+
+@app.get("/s3-files")
+async def get_s3_files():
+    """Return the current live file list from the RunPod-connected S3 bucket."""
+    try:
+        return {"files": list_s3_bucket_files()}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Could not load S3 files: {e}"})
+
+
+class DeleteS3FileRequest(BaseModel):
+    key: str
+
+
+@app.post("/delete-s3-file")
+async def delete_s3_file(req: DeleteS3FileRequest):
+    """Delete a file from the configured S3 bucket."""
+    if not req.key:
+        return JSONResponse(status_code=400, content={"error": "Missing S3 key."})
+
+    try:
+        s3.delete_object(Bucket=S3_BUCKET, Key=req.key)
+        print(f"🗑️ Deleted from S3: {req.key}")
+        return {"status": "deleted", "key": req.key}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Could not delete S3 file: {e}"})
+
+
 @app.get("/check/{filename}")
 async def check_transcription(filename: str):
     """Check if a transcription JSON already exists for this audio file."""
@@ -555,6 +685,10 @@ async def download_file(filename: str):
         media_type = "text/markdown"
         if filename.endswith(".docx"):
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif filename.endswith(".m4a"):
+            media_type = "audio/mp4"
+        elif filename.endswith(".wav"):
+            media_type = "audio/wav"
         return FileResponse(path, media_type=media_type, filename=filename)
     return {"error": "File not found"}
 
