@@ -12,3 +12,7 @@ omegaconf
 einops
 onnxruntime-gpu
 python-dotenv
+paddleocr
+paddlepaddle
+opencv-python-headless
+rapidfuzz

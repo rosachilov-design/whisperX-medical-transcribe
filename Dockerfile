@@ -23,6 +23,10 @@ RUN pip install --no-cache-dir --upgrade \
     "faster-whisper>=1.1.1" \
     "pyannote.audio>=4.0.0" \
     "whisperx==3.8.1" \
+    paddleocr \
+    paddlepaddle \
+    opencv-python-headless \
+    rapidfuzz \
     --extra-index-url https://download.pytorch.org/whl/cu124
 
 # ─── Pre-download Models ───

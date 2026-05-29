@@ -33,6 +33,13 @@ const improveAudioStatus = document.getElementById('improve-audio-status');
 const s3FileList = document.getElementById('s3-file-list');
 const s3BrowserStatus = document.getElementById('s3-browser-status');
 const refreshS3Btn = document.getElementById('refresh-s3-btn');
+const waveformContainer = document.getElementById('waveform-container');
+const videoPlayer = document.getElementById('video-player');
+const videoParticipantsPanel = document.getElementById('video-participants-panel');
+const videoParticipantsInput = document.getElementById('video-participants-input');
+const ocrSummary = document.getElementById('ocr-summary');
+const localTestBtn = document.getElementById('local-test-btn');
+const localHunyuanTestBtn = document.getElementById('local-hunyuan-test-btn');
 
 // Pod Control Elements
 const setupPodBtn = document.getElementById('setup-pod-btn');
@@ -42,14 +49,17 @@ const stopPodBtn = document.getElementById('stop-pod-btn');
 const podStatusBadge = document.getElementById('pod-status-badge');
 const logConsole = document.getElementById('log-console');
 const saveConfigBtn = document.getElementById('save-config-btn');
+const saveWorkersBtn = document.getElementById('save-workers-btn');
 const podIpInput = document.getElementById('pod-ip-input');
 const podPortInput = document.getElementById('pod-port-input');
 const podIdInput = document.getElementById('pod-id-input');
 const endpointIdInput = document.getElementById('endpoint-id-input');
+const workersMaxInput = document.getElementById('workers-max-input');
 const podKeyInput = document.getElementById('pod-key-input');
 
 let podPollingInterval = null;
 let logPollingInterval = null;
+let currentIsVideo = false;
 
 // ─── Dropzone & File Input ───
 
@@ -250,6 +260,9 @@ async function deleteS3File(key, name) {
 
 function initWaveSurfer(url) {
     if (wavesurfer) wavesurfer.destroy();
+    videoPlayer.pause();
+    videoPlayer.removeAttribute('src');
+    videoPlayer.load();
 
     wavesurfer = WaveSurfer.create({
         container: '#waveform',
@@ -285,6 +298,41 @@ function initWaveSurfer(url) {
     wavesurfer.on('pause', () => { playIcon.className = 'play-icon'; });
 }
 
+function initVideoPlayer(url) {
+    if (wavesurfer) {
+        wavesurfer.destroy();
+        wavesurfer = null;
+    }
+
+    videoPlayer.src = url;
+    videoPlayer.load();
+
+    videoPlayer.onloadedmetadata = () => {
+        durationDisplay.textContent = formatTime(videoPlayer.duration || 0);
+    };
+    videoPlayer.ontimeupdate = () => {
+        currentTimeDisplay.textContent = formatTime(videoPlayer.currentTime || 0);
+        highlightTranscription(videoPlayer.currentTime || 0);
+    };
+    videoPlayer.onplay = () => { playIcon.className = 'pause-icon'; };
+    videoPlayer.onpause = () => { playIcon.className = 'play-icon'; };
+}
+
+function setPlaybackMode(isVideo) {
+    currentIsVideo = isVideo;
+    document.getElementById('waveform').classList.toggle('hidden', isVideo);
+    videoPlayer.classList.toggle('hidden', !isVideo);
+    waveformContainer.classList.toggle('video-mode', isVideo);
+    document.querySelector('.audio-controls').classList.toggle('hidden', isVideo);
+    document.querySelector('.speaker-config').classList.toggle('hidden', isVideo);
+    videoParticipantsPanel.classList.toggle('hidden', !isVideo);
+    localTestBtn.classList.toggle('hidden', !isVideo);
+    localHunyuanTestBtn.classList.toggle('hidden', !isVideo);
+    document.querySelector('.speaker-management').classList.toggle('hidden', isVideo);
+    ocrSummary.classList.add('hidden');
+    ocrSummary.innerHTML = '';
+}
+
 function formatTime(seconds) {
     const minutes = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
@@ -306,16 +354,66 @@ function getJsonFilename(data) {
 
 let knownSpeakers = [];
 
+function parseKnownParticipants() {
+    return videoParticipantsInput.value
+        .split(';')
+        .map(name => name.trim().replace(/\s+/g, ' '))
+        .filter((name, index, all) => name && all.indexOf(name) === index);
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[char]));
+}
+
+function renderOcrSummary(data) {
+    const summary = data?.ocr_diarization;
+    if (!summary || !currentIsVideo) {
+        ocrSummary.classList.add('hidden');
+        ocrSummary.innerHTML = '';
+        return;
+    }
+
+    const unknownRate = Math.round((summary.unknown_rate || 0) * 100);
+    const namedRate = Math.max(0, 100 - unknownRate);
+    const known = summary.known_speakers || [];
+    const discovered = (summary.discovered_speakers || []).map(item => item.speaker);
+    const speakers = known.length ? known : discovered;
+    const reviewItems = (summary.low_confidence_intervals || []).slice(0, 4)
+        .map(item => formatTime(item.start))
+        .join(', ');
+
+    ocrSummary.innerHTML = `
+        <div class="ocr-summary-title">OCR speaker timeline</div>
+        <div class="ocr-summary-grid">
+            <span>Named ${namedRate}% / Unknown ${unknownRate}%</span>
+            <span>Speakers: ${speakers.length ? escapeHtml(speakers.join(', ')) : 'auto-discovery found none'}</span>
+            <span>Needs review: ${escapeHtml(reviewItems || 'none')}</span>
+        </div>
+    `;
+    ocrSummary.classList.remove('hidden');
+}
+
 async function handleFile(file) {
     filenameDisplay.textContent = file.name;
     launchScreen.classList.add('hidden');
     mainInterface.classList.remove('hidden');
     knownSpeakers = [];
     renderSpeakerList();
+    setPlaybackMode(file.name.toLowerCase().endsWith('.mp4'));
 
-    // Load audio player immediately
+    // Load local preview immediately
     const url = URL.createObjectURL(file);
-    initWaveSurfer(url);
+    if (currentIsVideo) {
+        initVideoPlayer(url);
+    } else {
+        initWaveSurfer(url);
+    }
 
     // Check if a transcription already exists for this file
     try {
@@ -382,6 +480,7 @@ function loadCompletedTranscription(data) {
     transcriptionContent.innerHTML = '';
     segments = data.result;
     lastSegmentCount = 0;
+    renderOcrSummary(data);
 
     data.result.forEach((seg, idx) => {
         const div = createSegmentEl(seg, idx);
@@ -424,7 +523,12 @@ startDiarizationBtn.onclick = async () => {
     try {
         let url = `/process-cloud/${currentTaskId}?min_speakers=${minSpeakers}&max_speakers=${maxSpeakers}`;
         if (numSpeakers) url += `&num_speakers=${numSpeakers}`;
-        const r = await fetch(url, { method: 'POST' });
+        const body = currentIsVideo ? { known_speakers: parseKnownParticipants() } : {};
+        const r = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
         const cloudResult = await r.json();
         if (cloudResult.status === 'started' || cloudResult.status === 'completed') {
             startPolling();
@@ -435,6 +539,41 @@ startDiarizationBtn.onclick = async () => {
         statusText.textContent = `❌ Network Error: ${err.message}`;
     }
 };
+
+async function runLocalOcr(engine) {
+    if (!currentTaskId || !currentIsVideo) return;
+
+    const activeBtn = engine === 'hunyuan' ? localHunyuanTestBtn : localTestBtn;
+    activeBtn.disabled = true;
+    activeBtn.textContent = engine === 'hunyuan' ? 'Running Hunyuan...' : 'Running Paddle...';
+    progressSection.classList.remove('hidden');
+    statusText.textContent = `Running local ${engine} OCR diarization on this computer...`;
+
+    try {
+        const response = await fetch(`/process-local/${currentTaskId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                known_speakers: parseKnownParticipants(),
+                ocr_engine: engine
+            })
+        });
+        const result = await response.json();
+
+        if (!response.ok || result.error) {
+            throw new Error(result.error || 'Local OCR failed to start.');
+        }
+
+        startPolling(500);
+    } catch (err) {
+        statusText.textContent = `Local ${engine} OCR error: ${err.message}`;
+        activeBtn.disabled = false;
+        activeBtn.textContent = engine === 'hunyuan' ? 'Run local Hunyuan OCR' : 'Run local Paddle OCR';
+    }
+}
+
+localTestBtn.onclick = () => runLocalOcr('paddle');
+localHunyuanTestBtn.onclick = () => runLocalOcr('hunyuan');
 
 startTranscriptionBtn.onclick = async () => {
     if (!currentTaskId) return;
@@ -464,7 +603,7 @@ newSessionBtn.onclick = () => {
 
 // ─── Polling ───
 
-function startPolling() {
+function startPolling(intervalMs = 2000) {
     if (statusInterval) clearInterval(statusInterval);
     lastSegmentCount = 0;
 
@@ -483,7 +622,7 @@ function startPolling() {
         } catch (err) {
             console.error('Status check failed:', err);
         }
-    }, 2000);
+    }, intervalMs);
 }
 
 
@@ -518,11 +657,29 @@ function updateUI(data) {
         percentText.textContent = `${data.progress || 0}%`;
         progressBar.style.width = `${data.progress || 0}%`;
     }
+    else if (data.status === 'local_ocr_processing') {
+        progressSection.classList.remove('hidden');
+        const frame = data.ocr_frame;
+        const total = data.ocr_frames_total;
+        const device = data.ocr_device ? ` [${data.ocr_device}]` : '';
+        if (frame != null && total != null && total > 0) {
+            statusText.textContent = `Local OCR: frame ${frame}/${total}${device}`;
+        } else {
+            statusText.textContent = `Running local OCR diarization...${device}`;
+        }
+        percentText.textContent = `${data.progress || 0}%`;
+        progressBar.style.width = `${data.progress || 0}%`;
+    }
     else if (data.status === 'diarization_complete') {
         progressSection.classList.add('hidden');
         startDiarizationBtn.classList.add('hidden');
         startTranscriptionBtn.classList.remove('hidden');
         startTranscriptionBtn.disabled = false;
+        localTestBtn.disabled = false;
+        localTestBtn.textContent = 'Run local Paddle OCR';
+        localHunyuanTestBtn.disabled = false;
+        localHunyuanTestBtn.textContent = 'Run local Hunyuan OCR';
+        renderOcrSummary(data);
         statusText.textContent = '✅ Diarization complete. Ready to Transcribe.';
         clearInterval(statusInterval);
     }
@@ -659,6 +816,11 @@ function createSegmentEl(seg, index) {
 }
 
 function seekTo(time) {
+    if (currentIsVideo) {
+        videoPlayer.currentTime = time;
+        videoPlayer.play();
+        return;
+    }
     wavesurfer.setTime(time);
     wavesurfer.play();
 }
@@ -689,16 +851,35 @@ function highlightTranscription(currentTime) {
 
 // ─── Controls ───
 
-playPauseBtn.onclick = () => wavesurfer.playPause();
-document.getElementById('skip-back-15').onclick = () => wavesurfer.skip(-15);
-document.getElementById('skip-back-5').onclick = () => wavesurfer.skip(-5);
-document.getElementById('skip-forward-5').onclick = () => wavesurfer.skip(5);
-document.getElementById('skip-forward-15').onclick = () => wavesurfer.skip(15);
+function skipPlayback(seconds) {
+    if (currentIsVideo) {
+        videoPlayer.currentTime = Math.max(0, Math.min((videoPlayer.duration || Infinity), videoPlayer.currentTime + seconds));
+        return;
+    }
+    if (wavesurfer) wavesurfer.skip(seconds);
+}
+
+playPauseBtn.onclick = () => {
+    if (currentIsVideo) {
+        if (videoPlayer.paused) videoPlayer.play();
+        else videoPlayer.pause();
+        return;
+    }
+    if (wavesurfer) wavesurfer.playPause();
+};
+document.getElementById('skip-back-15').onclick = () => skipPlayback(-15);
+document.getElementById('skip-back-5').onclick = () => skipPlayback(-5);
+document.getElementById('skip-forward-5').onclick = () => skipPlayback(5);
+document.getElementById('skip-forward-15').onclick = () => skipPlayback(15);
 
 document.querySelectorAll('.speed-btn').forEach(btn => {
     btn.onclick = () => {
         const speed = parseFloat(btn.dataset.speed);
-        if (wavesurfer) {
+        if (currentIsVideo) {
+            videoPlayer.playbackRate = speed;
+            document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        } else if (wavesurfer) {
             wavesurfer.setPlaybackRate(speed);
             document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
@@ -710,9 +891,15 @@ removeFileBtn.onclick = () => {
     launchScreen.classList.remove('hidden');
     mainInterface.classList.add('hidden');
     if (wavesurfer) wavesurfer.destroy();
+    videoPlayer.pause();
+    videoPlayer.removeAttribute('src');
+    videoPlayer.load();
     currentTaskId = null;
+    currentIsVideo = false;
     segments = [];
     footerActions.classList.add('hidden');
+    ocrSummary.classList.add('hidden');
+    ocrSummary.innerHTML = '';
     transcriptionContent.innerHTML = '<div class="placeholder-text">Your transcription will appear here...</div>';
 };
 
@@ -727,6 +914,10 @@ function addLog(text) {
     line.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
     logConsole.appendChild(line);
     logConsole.scrollTop = logConsole.scrollHeight;
+}
+
+function getErrorMessage(data) {
+    return data?.error || data?.detail || data?.message || 'Unknown error';
 }
 
 saveConfigBtn.onclick = async () => {
@@ -746,6 +937,49 @@ saveConfigBtn.onclick = async () => {
     if (resp.ok) {
         addLog(`✅ Config updated. Endpoint: ${config.endpoint_id || 'Not set'}`);
         startPodPolling();
+        if (config.endpoint_id) await loadEndpointWorkers(config.endpoint_id);
+    }
+};
+
+saveWorkersBtn.onclick = async () => {
+    const endpointId = endpointIdInput.value.trim();
+    if (!endpointId) {
+        addLog('Serverless Endpoint ID is required before saving max workers.');
+        return;
+    }
+
+    const workersMax = parseInt(workersMaxInput.value, 10);
+    if (Number.isNaN(workersMax) || workersMax < 0) {
+        addLog('Max workers must be a whole number 0 or greater.');
+        return;
+    }
+
+    addLog(`Saving RunPod max workers=${workersMax}...`);
+    saveWorkersBtn.disabled = true;
+
+    try {
+        const resp = await fetch('/endpoint-workers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                endpoint_id: endpointId,
+                workers_max: workersMax
+            })
+        });
+        const data = await resp.json();
+
+        if (!resp.ok) {
+            addLog(`RunPod update failed: ${getErrorMessage(data)}`);
+            return;
+        }
+
+        workersMaxInput.value = data.workers_max ?? workersMax;
+        addLog(`RunPod saved. Live workersMax=${data.workers_max}.`);
+    } catch (e) {
+        console.error('Failed to save endpoint workers', e);
+        addLog('RunPod update failed: network error');
+    } finally {
+        saveWorkersBtn.disabled = false;
     }
 };
 
@@ -762,8 +996,29 @@ async function loadConfig() {
         if (data.endpoint_id || data.ip) {
             addLog("📁 Loaded existing configuration from server.");
         }
+        if (data.endpoint_id) await loadEndpointWorkers(data.endpoint_id);
     } catch (e) {
         console.error("Failed to load config", e);
+    }
+}
+
+async function loadEndpointWorkers(endpointId = endpointIdInput.value.trim()) {
+    const resolvedEndpointId = endpointId.trim();
+    if (!resolvedEndpointId) return;
+
+    try {
+        const resp = await fetch(`/endpoint-workers?endpoint_id=${encodeURIComponent(resolvedEndpointId)}`);
+        const data = await resp.json();
+        if (!resp.ok) {
+            addLog(`RunPod workers load failed: ${getErrorMessage(data)}`);
+            return;
+        }
+
+        workersMaxInput.value = data.workers_max ?? '';
+        addLog(`Loaded RunPod max workers: ${data.workers_max}`);
+    } catch (e) {
+        console.error('Failed to load endpoint workers', e);
+        addLog('RunPod workers load failed: network error');
     }
 }
 

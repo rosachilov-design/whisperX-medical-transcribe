@@ -46,11 +46,12 @@
                         <span>or click to browse</span>
                         <span class="drop-hint-line"></span>
                     </div>
-                    <input type="file" id="file-input" accept=".m4a,.mp3,.wav" style="display:none">
+                    <input type="file" id="file-input" accept=".m4a,.mp3,.wav,.mp4" style="display:none">
                     <div class="drop-formats">
                         <span class="format-tag">M4A</span>
                         <span class="format-tag">MP3</span>
                         <span class="format-tag">WAV</span>
+                        <span class="format-tag">MP4</span>
                     </div>
                 </div>
 
@@ -76,6 +77,13 @@
                         <div class="form-field">
                             <label>Serverless Endpoint ID</label>
                             <input type="text" id="endpoint-id-input" placeholder="rvsnnk5hb1snt6" autocomplete="off">
+                        </div>
+                        <div class="form-row form-row-split">
+                            <div class="form-field">
+                                <label>Max Workers</label>
+                                <input type="number" id="workers-max-input" min="0" step="1" placeholder="0">
+                            </div>
+                            <button id="save-workers-btn" class="save-workers-btn" type="button">Save</button>
                         </div>
                         <div class="form-field">
                             <label>Legacy Pod ID</label>
@@ -179,10 +187,18 @@
 
                 <div class="audio-header">
                     <h2 id="filename-display">filename.m4a</h2>
+                    <button id="local-test-btn" class="local-test-btn hidden" type="button">
+                        Run local Paddle OCR
+                    </button>
+                    <button id="local-hunyuan-test-btn" class="local-test-btn local-hunyuan-test-btn hidden"
+                        type="button">
+                        Run local Hunyuan OCR
+                    </button>
                 </div>
 
                 <div id="waveform-container">
                     <div id="waveform"></div>
+                    <video id="video-player" class="video-player hidden" controls playsinline></video>
                 </div>
 
                 <div class="audio-controls">
@@ -213,6 +229,12 @@
                     <div class="time-display">
                         <span id="duration">0:00</span>
                     </div>
+                </div>
+
+                <div id="video-participants-panel" class="video-participants-panel hidden">
+                    <label for="video-participants-input">Known participants</label>
+                    <input type="text" id="video-participants-input"
+                        placeholder="Анна; Сергей; Мария; Модератор">
                 </div>
 
                 <div id="transcription-actions" class="transcription-actions">
@@ -272,6 +294,8 @@
                     <div id="speaker-list" class="speaker-chips">
                     </div>
                 </div>
+
+                <div id="ocr-summary" class="ocr-summary hidden"></div>
 
                 <div id="transcription-content" class="transcription-list">
                     <div class="placeholder-text">

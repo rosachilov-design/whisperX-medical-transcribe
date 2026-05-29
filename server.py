@@ -6,11 +6,11 @@ No GPU needed. Loads .json state files and pairs them with local audio.
 Also supports S3 upload for sending files to RunPod.
 """
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import os
 import sys
 import io
@@ -174,6 +174,28 @@ def format_transcription_segments(result_segments):
     return formatted_segments
 
 
+def is_video_filename(filename):
+    return Path(filename or "").suffix.lower() == ".mp4"
+
+
+def normalize_known_speakers(value):
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw_items = value.split(";")
+    else:
+        raw_items = value
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        name = re.sub(r"\s+", " ", str(item or "")).strip()
+        if not name or name in seen:
+            continue
+        normalized.append(name)
+        seen.add(name)
+    return normalized
+
+
 def get_json_result_name(task):
     filename = task.get("filename")
     if not filename:
@@ -250,6 +272,86 @@ def improve_audio_for_transcription(input_path: Path, output_path: Path):
     if result.returncode != 0:
         error_text = result.stderr.strip() or result.stdout.strip() or "Unknown ffmpeg error"
         raise RuntimeError(error_text)
+
+
+def run_local_ocr_task(task_id: str, known_speakers=None, ocr_engine="paddle"):
+    task = transcriptions.get(task_id)
+    if not task:
+        return
+
+    try:
+        filename = task.get("filename", task_id)
+        if not is_video_filename(filename):
+            raise ValueError("Local OCR test is only available for .mp4 files.")
+
+        file_path = UPLOAD_DIR / filename
+        if not file_path.exists():
+            raise FileNotFoundError(f"Uploaded file not found: {filename}")
+
+        from paddle_ocr_factory import get_ocr_device
+
+        task["status"] = "local_ocr_processing"
+        task["progress"] = 10
+        task["ocr_frame"] = 0
+        task["ocr_frames_total"] = 0
+        task["ocr_device"] = get_ocr_device()
+        persist_task_json(task_id)
+
+        from zoom_ocr_local import build_zoom_ocr_timeline
+
+        last_persist_at = [0.0]
+        last_terminal_line = [None]
+        device_label = f"{task['ocr_device']} / {ocr_engine}"
+
+        print(f"Local OCR starting: {task_id} on {device_label}", flush=True)
+
+        def on_ocr_progress(current, total):
+            task["ocr_frame"] = current
+            task["ocr_frames_total"] = total
+            progress_pct = min(95, 10 + int(85 * current / max(total, 1)))
+            task["progress"] = progress_pct
+            now = time.time()
+            if now - last_persist_at[0] >= 0.4 or current >= total:
+                last_persist_at[0] = now
+                persist_task_json(task_id)
+
+            line = (
+                f"Local OCR [{task_id}] frame {current}/{total} "
+                f"[{device_label}] {progress_pct}%"
+            )
+            if line != last_terminal_line[0]:
+                last_terminal_line[0] = line
+                sys.stdout.write(f"\r{line}")
+                sys.stdout.flush()
+
+        timeline, ocr_summary = build_zoom_ocr_timeline(
+            file_path,
+            known_speakers=normalize_known_speakers(known_speakers),
+            on_progress=on_ocr_progress,
+            ocr_engine=ocr_engine,
+        )
+
+        task["timeline"] = timeline
+        task["ocr_diarization"] = ocr_summary
+        task["status"] = "diarization_complete"
+        task["progress"] = 100
+        task.pop("ocr_frame", None)
+        task.pop("ocr_frames_total", None)
+        persist_task_json(task_id)
+        if last_terminal_line[0] is not None:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        print(f"Local OCR diarization complete: {task_id}", flush=True)
+    except Exception as e:
+        task["status"] = "error"
+        task["error"] = f"Local OCR failed: {e}"
+        task["progress"] = 0
+        task.pop("ocr_frame", None)
+        task.pop("ocr_frames_total", None)
+        persist_task_json(task_id)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        print(f"Local OCR failed for {task_id}: {e}", flush=True)
 
 
 def list_s3_bucket_files():
@@ -528,7 +630,13 @@ async def transcribe_cloud(task_id: str):
 # ═══════════════════════════════════════════
 
 @app.post("/process-cloud/{task_id}")
-async def process_cloud(task_id: str, min_speakers: int = 1, max_speakers: int = 10, num_speakers: int = None):
+async def process_cloud(
+    task_id: str,
+    min_speakers: int = 1,
+    max_speakers: int = 10,
+    num_speakers: int = None,
+    request_body: dict | None = Body(default=None),
+):
     """Trigger the full serverless pipeline in a single RunPod job."""
     if task_id not in transcriptions:
         return {"error": "Task not found"}
@@ -553,6 +661,8 @@ async def process_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
                 if status == "COMPLETED":
                     output = data["output"]
                     transcriptions[task_id]["timeline"] = output.get("timeline", [])
+                    if output.get("ocr_diarization"):
+                        transcriptions[task_id]["ocr_diarization"] = output.get("ocr_diarization")
                     transcriptions[task_id]["result"] = format_transcription_segments(output.get("result", []))
                     transcriptions[task_id]["status"] = "completed"
                     transcriptions[task_id]["progress"] = 100
@@ -581,6 +691,7 @@ async def process_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
     try:
         safe_key = task.get("s3_key", task_id)
         s3_key = f"transcriber/uploads/{safe_key}"
+        known_speakers = normalize_known_speakers((request_body or {}).get("known_speakers"))
 
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
         headers = {
@@ -602,6 +713,7 @@ async def process_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
                 "min_speakers": min_speakers,
                 "max_speakers": max_speakers,
                 "num_speakers": num_speakers,
+                "known_speakers": known_speakers,
                 "hf_token": HF_TOKEN
             }
         }
@@ -627,6 +739,35 @@ async def process_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
         return {"status": "error", "error": str(e)}
 
 
+@app.post("/process-local/{task_id}")
+async def process_local(task_id: str, request_body: dict | None = Body(default=None)):
+    """Run local CPU OCR diarization for .mp4 files without RunPod."""
+    if task_id not in transcriptions:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+
+    task = transcriptions[task_id]
+    if not is_video_filename(task.get("filename", task_id)):
+        return JSONResponse(status_code=400, content={"error": "Local OCR test is only available for .mp4 files."})
+
+    from paddle_ocr_factory import get_ocr_device
+
+    task["status"] = "local_ocr_processing"
+    task["progress"] = 5
+    task["ocr_frame"] = 0
+    task["ocr_frames_total"] = 0
+    task["ocr_device"] = get_ocr_device()
+    task.pop("error", None)
+    persist_task_json(task_id)
+
+    known_speakers = normalize_known_speakers((request_body or {}).get("known_speakers"))
+    ocr_engine = str((request_body or {}).get("ocr_engine") or "paddle").lower()
+    if ocr_engine not in {"paddle", "hunyuan"}:
+        return JSONResponse(status_code=400, content={"error": f"Unsupported local OCR engine: {ocr_engine}"})
+
+    threading.Thread(target=run_local_ocr_task, args=(task_id, known_speakers, ocr_engine), daemon=True).start()
+    return {"status": "started", "mode": "local_ocr", "ocr_engine": ocr_engine}
+
+
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     """Save file locally and begin S3 upload in background."""
@@ -650,6 +791,7 @@ async def upload_file(file: UploadFile = File(...)):
 
     transcriptions[task_id] = {
         "filename": file.filename,
+        "is_video": is_video_filename(file.filename),
         "status": "uploading",
         "progress": 0,
         "result": [],
@@ -830,6 +972,11 @@ class PodConfigRequest(BaseModel):
     endpoint_id: str = ""
     key_path: str = None
 
+
+class EndpointWorkersRequest(BaseModel):
+    endpoint_id: str = ""
+    workers_max: int = Field(..., ge=0)
+
 @app.post("/update-pod-config")
 async def update_pod_config(req: PodConfigRequest):
     """Save Pod metadata and Serverless Endpoint ID to the current session and .env."""
@@ -972,8 +1119,187 @@ async def get_pod_logs():
 def runpod_gql(query):
     """Send a GraphQL request to RunPod API."""
     headers = {"Content-Type": "application/json", "api-key": RUNPOD_API_KEY}
-    resp = http_requests.post(RUNPOD_GQL, json={"query": query}, headers=headers)
+    resp = http_requests.post(
+        RUNPOD_GQL,
+        params={"api_key": RUNPOD_API_KEY},
+        json={"query": query},
+        headers=headers,
+    )
     return resp.json()
+
+
+def get_runpod_endpoint_id(endpoint_id: str = ""):
+    resolved_endpoint_id = (endpoint_id or RUNPOD_ENDPOINT_ID or "").strip()
+    if not resolved_endpoint_id:
+        raise ValueError("Serverless Endpoint ID is not configured.")
+    return resolved_endpoint_id
+
+
+def get_live_endpoint_workers(endpoint_id: str = ""):
+    resolved_endpoint_id = get_runpod_endpoint_id(endpoint_id)
+    if not RUNPOD_API_KEY:
+        raise ValueError("RUNPOD_API_KEY is not configured.")
+
+    query = """
+    query GetMyEndpoints {
+      myself {
+        endpoints {
+          id
+          name
+          gpuIds
+          templateId
+          workersMax
+          workersMin
+        }
+      }
+    }
+    """
+    result = runpod_gql(query)
+    if result.get("errors"):
+        message = result["errors"][0].get("message", "RunPod endpoint query failed.")
+        raise RuntimeError(message)
+
+    data = result.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"RunPod returned no data for endpoint query: {result}")
+
+    myself = data.get("myself")
+    if not isinstance(myself, dict):
+        raise RuntimeError(
+            "RunPod returned no endpoint owner data. "
+            "This usually means the API key does not have GraphQL account access "
+            "for listing/updating endpoints. Verify the key in RunPod Settings has "
+            "GraphQL endpoint permissions, then retry. "
+            f"Raw response: {result}"
+        )
+
+    endpoints = myself.get("endpoints")
+    if not isinstance(endpoints, list):
+        raise RuntimeError(f"RunPod returned malformed endpoint list: {result}")
+
+    endpoint = next(
+        (
+            item for item in endpoints
+            if isinstance(item, dict) and item.get("id") == resolved_endpoint_id
+        ),
+        None,
+    )
+    if not endpoint:
+        raise LookupError(f"RunPod endpoint '{resolved_endpoint_id}' was not found.")
+    return endpoint
+
+
+def update_live_endpoint_workers(workers_max: int, endpoint_id: str = ""):
+    resolved_endpoint_id = get_runpod_endpoint_id(endpoint_id)
+    if not RUNPOD_API_KEY:
+        raise ValueError("RUNPOD_API_KEY is not configured.")
+    endpoint = get_live_endpoint_workers(resolved_endpoint_id)
+
+    required_fields = {
+        "name": endpoint.get("name"),
+        "gpuIds": endpoint.get("gpuIds"),
+        "templateId": endpoint.get("templateId"),
+    }
+    missing_fields = [key for key, value in required_fields.items() if not value]
+    if missing_fields:
+        raise RuntimeError(
+            f"RunPod endpoint is missing required fields for update: {', '.join(missing_fields)}."
+        )
+
+    query = """
+    mutation UpdateEndpointWorkers(
+      $id: String!,
+      $name: String!,
+      $gpuIds: String!,
+      $templateId: String!,
+      $workersMax: Int!
+    ) {
+      saveEndpoint(input: {
+        id: $id,
+        name: $name,
+        gpuIds: $gpuIds,
+        templateId: $templateId,
+        workersMax: $workersMax
+      }) {
+        id
+        name
+        gpuIds
+        templateId
+        workersMax
+        workersMin
+      }
+    }
+    """
+    payload = {
+        "query": query,
+        "variables": {
+            "id": resolved_endpoint_id,
+            "name": required_fields["name"],
+            "gpuIds": required_fields["gpuIds"],
+            "templateId": required_fields["templateId"],
+            "workersMax": workers_max,
+        },
+    }
+    headers = {"Content-Type": "application/json", "api-key": RUNPOD_API_KEY}
+    resp = http_requests.post(
+        RUNPOD_GQL,
+        params={"api_key": RUNPOD_API_KEY},
+        json=payload,
+        headers=headers,
+    )
+    result = resp.json()
+    if result.get("errors"):
+        message = result["errors"][0].get("message", "RunPod endpoint update failed.")
+        raise RuntimeError(message)
+
+    data = result.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"RunPod returned no data for endpoint update: {result}")
+
+    endpoint = data.get("saveEndpoint")
+    if not isinstance(endpoint, dict):
+        raise RuntimeError(f"RunPod did not return updated endpoint data: {result}")
+    return endpoint
+
+
+@app.get("/endpoint-workers")
+async def get_endpoint_workers(endpoint_id: str = ""):
+    """Return the live worker limits for the configured Serverless endpoint."""
+    try:
+        endpoint = get_live_endpoint_workers(endpoint_id)
+        return {
+            "endpoint_id": endpoint.get("id", ""),
+            "name": endpoint.get("name", ""),
+            "workers_max": endpoint.get("workersMax"),
+            "workers_min": endpoint.get("workersMin"),
+        }
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except LookupError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Could not load endpoint workers: {e}"})
+
+
+@app.post("/endpoint-workers")
+async def save_endpoint_workers(req: EndpointWorkersRequest):
+    """Update the live max workers setting for the configured Serverless endpoint."""
+    try:
+        updated = update_live_endpoint_workers(req.workers_max, req.endpoint_id)
+        live = get_live_endpoint_workers(req.endpoint_id or updated.get("id", ""))
+        return {
+            "status": "updated",
+            "endpoint_id": live.get("id", ""),
+            "name": live.get("name", ""),
+            "workers_max": live.get("workersMax"),
+            "workers_min": live.get("workersMin"),
+        }
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except LookupError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Could not update endpoint workers: {e}"})
 
 
 @app.post("/start-pod")
