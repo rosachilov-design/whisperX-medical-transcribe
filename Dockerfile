@@ -7,6 +7,8 @@ FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/app/models
+ENV LOCAL_OCR_DEVICE=auto
+ENV ZOOM_DIARIZATION_MODE=robust
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,10 +26,15 @@ RUN pip install --no-cache-dir --upgrade \
     "pyannote.audio>=4.0.0" \
     "whisperx==3.8.1" \
     paddleocr \
-    paddlepaddle \
     opencv-python-headless \
     rapidfuzz \
     --extra-index-url https://download.pytorch.org/whl/cu124
+
+# PaddleOCR GPU runtime for RunPod. Keep this separate from the PyTorch index so
+# Paddle resolves against its CUDA wheel repository instead of PyPI CPU wheels.
+RUN pip install --no-cache-dir \
+    "paddlepaddle-gpu==3.3.0" \
+    -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
 
 # ─── Pre-download Models ───
 # Bake models into the image for instant cold-starts
@@ -58,4 +65,5 @@ else:
 PY
 
 COPY handler.py /app/handler.py
+COPY paddle_ocr_factory.py /app/paddle_ocr_factory.py
 CMD ["python", "-u", "/app/handler.py"]

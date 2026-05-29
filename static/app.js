@@ -1,5 +1,6 @@
 let wavesurfer;
 let currentTaskId = null;
+let currentFile = null;
 let statusInterval = null;
 let segments = [];
 let lastSegmentCount = 0;
@@ -19,6 +20,7 @@ const transcriptionContent = document.getElementById('transcription-content');
 const footerActions = document.getElementById('footer-actions');
 const jsonFilenameSpan = document.getElementById('json-filename-span');
 const openJsonBtn = document.getElementById('open-json-btn');
+const resetTranscriptionBtn = document.getElementById('reset-transcription-btn');
 const removeFileBtn = document.getElementById('remove-file');
 const currentTimeDisplay = document.getElementById('current-time');
 const durationDisplay = document.getElementById('duration');
@@ -33,6 +35,7 @@ const improveAudioStatus = document.getElementById('improve-audio-status');
 const s3FileList = document.getElementById('s3-file-list');
 const s3BrowserStatus = document.getElementById('s3-browser-status');
 const refreshS3Btn = document.getElementById('refresh-s3-btn');
+const deleteAllS3Btn = document.getElementById('delete-all-s3-btn');
 const waveformContainer = document.getElementById('waveform-container');
 const videoPlayer = document.getElementById('video-player');
 const videoParticipantsPanel = document.getElementById('video-participants-panel');
@@ -216,6 +219,7 @@ function renderS3Files(files) {
 async function loadS3Files() {
     s3BrowserStatus.textContent = 'Loading files from S3...';
     refreshS3Btn.disabled = true;
+    deleteAllS3Btn.disabled = true;
 
     try {
         const response = await fetch('/s3-files');
@@ -227,9 +231,46 @@ async function loadS3Files() {
 
         renderS3Files(data.files || []);
         s3BrowserStatus.textContent = `${(data.files || []).length} file(s) currently on the server.`;
+        deleteAllS3Btn.disabled = !(data.files || []).length;
     } catch (err) {
         s3FileList.innerHTML = '<div class="s3-empty-state">Could not load bucket contents.</div>';
         s3BrowserStatus.textContent = `Error: ${err.message}`;
+    } finally {
+        refreshS3Btn.disabled = false;
+    }
+}
+
+async function deleteAllS3Files() {
+    const warning = [
+        'Delete EVERY file from the RunPod S3 bucket?',
+        '',
+        'This removes audio, video, JSON, and any other objects listed here from RunPod storage.',
+        'It also clears the local server uploads/results cache.',
+        'This cannot be undone.'
+    ].join('\n');
+    if (!confirm(warning)) return;
+
+    s3BrowserStatus.textContent = 'Deleting all files from RunPod storage...';
+    refreshS3Btn.disabled = true;
+    deleteAllS3Btn.disabled = true;
+
+    try {
+        const response = await fetch('/delete-all-s3-files', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm: 'DELETE ALL' })
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok || data.error) {
+            throw new Error(data.error || 'Delete all failed.');
+        }
+
+        s3BrowserStatus.textContent = `Deleted ${data.deleted_remote || 0} remote and ${data.deleted_local || 0} local server file(s).`;
+        await loadS3Files();
+    } catch (err) {
+        s3BrowserStatus.textContent = `Error: ${err.message}`;
+        deleteAllS3Btn.disabled = false;
     } finally {
         refreshS3Btn.disabled = false;
     }
@@ -324,7 +365,7 @@ function setPlaybackMode(isVideo) {
     videoPlayer.classList.toggle('hidden', !isVideo);
     waveformContainer.classList.toggle('video-mode', isVideo);
     document.querySelector('.audio-controls').classList.toggle('hidden', isVideo);
-    document.querySelector('.speaker-config').classList.toggle('hidden', isVideo);
+    document.querySelector('.speaker-config').classList.remove('hidden');
     videoParticipantsPanel.classList.toggle('hidden', !isVideo);
     localTestBtn.classList.toggle('hidden', !isVideo);
     localHunyuanTestBtn.classList.toggle('hidden', !isVideo);
@@ -399,7 +440,54 @@ function renderOcrSummary(data) {
     ocrSummary.classList.remove('hidden');
 }
 
+async function uploadCurrentFileToCloud() {
+    if (!currentFile) {
+        statusText.textContent = 'Choose the source file again to upload it for a fresh transcription.';
+        return;
+    }
+
+    startDiarizationBtn.classList.remove('hidden');
+    startDiarizationBtn.disabled = true;
+    startDiarizationBtn.textContent = 'Uploading...';
+    startTranscriptionBtn.classList.add('hidden');
+    startTranscriptionBtn.disabled = true;
+    footerActions.classList.add('hidden');
+    progressSection.classList.remove('hidden');
+    statusText.textContent = 'Uploading to cloud storage...';
+    percentText.textContent = '';
+    progressBar.style.width = '0%';
+    transcriptionContent.innerHTML = '<div class="placeholder-text">Your transcription will appear here...</div>';
+    segments = [];
+    lastSegmentCount = 0;
+
+    const formData = new FormData();
+    formData.append('file', currentFile);
+
+    try {
+        const response = await fetch('/upload', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await response.json();
+        currentTaskId = data.task_id;
+
+        if (data.task_id) {
+            const statusResp = await fetch(`/status/${encodeURIComponent(data.task_id)}`);
+            const statusData = await statusResp.json();
+            if (statusData.status === 'completed') {
+                loadCompletedTranscription(statusData);
+                return;
+            }
+        }
+
+        startPolling();
+    } catch (err) {
+        statusText.textContent = `Upload failed: ${err.message}`;
+    }
+}
+
 async function handleFile(file) {
+    currentFile = file;
     filenameDisplay.textContent = file.name;
     launchScreen.classList.add('hidden');
     mainInterface.classList.remove('hidden');
@@ -417,7 +505,7 @@ async function handleFile(file) {
 
     // Check if a transcription already exists for this file
     try {
-        const checkResponse = await fetch(`/check/${file.name}`);
+        const checkResponse = await fetch(`/check/${encodeURIComponent(file.name)}`);
         const checkData = await checkResponse.json();
 
         if (checkData.status === 'completed' && checkData.result) {
@@ -430,42 +518,8 @@ async function handleFile(file) {
         console.log('No existing transcription found, proceeding with upload.');
     }
 
-    // No existing transcription — upload to server + S3
-    startDiarizationBtn.classList.remove('hidden');
-    startDiarizationBtn.disabled = true;
-    startDiarizationBtn.textContent = 'Uploading...';
-    startTranscriptionBtn.classList.add('hidden');
-    startTranscriptionBtn.disabled = true;
-    progressSection.classList.remove('hidden');
-    statusText.textContent = '☁️ Uploading to cloud storage...';
-    percentText.textContent = '';
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-        const response = await fetch('/upload', {
-            method: 'POST',
-            body: formData
-        });
-        const data = await response.json();
-        currentTaskId = data.task_id;
-
-        // Check if upload returned an existing transcription
-        if (data.task_id) {
-            const statusResp = await fetch(`/status/${data.task_id}`);
-            const statusData = await statusResp.json();
-            if (statusData.status === 'completed') {
-                loadCompletedTranscription(statusData);
-                return;
-            }
-        }
-
-        // Start polling for S3 upload progress
-        startPolling();
-    } catch (err) {
-        statusText.textContent = 'Upload failed';
-    }
+    await uploadCurrentFileToCloud();
+    return;
 }
 
 
@@ -505,6 +559,69 @@ function loadCompletedTranscription(data) {
     refreshAllSegments();
 }
 
+async function resetCurrentTranscription() {
+    if (!currentTaskId) return;
+
+    resetTranscriptionBtn.disabled = true;
+    const filename = currentTaskId;
+
+    try {
+        const storageResp = await fetch(`/transcription-storage/${encodeURIComponent(filename)}`);
+        const storage = await storageResp.json().catch(() => ({}));
+        if (!storageResp.ok || storage.error) {
+            throw new Error(storage.error || 'Could not check transcription storage.');
+        }
+
+        const remoteKeys = storage.remote_json_keys || [];
+        const message = remoteKeys.length
+            ? [
+                `Reset transcription for ${filename}?`,
+                '',
+                'This will delete the local JSON and the RunPod/S3 JSON result:',
+                ...remoteKeys.map(key => `- ${key}`),
+                '',
+                'The source media will stay available so you can transcribe again.'
+            ].join('\n')
+            : [
+                `Reset transcription for ${filename}?`,
+                '',
+                'This will delete the local JSON result. The source media will stay available.'
+            ].join('\n');
+
+        if (!confirm(message)) return;
+
+        statusText.textContent = 'Resetting transcription...';
+        const resetResp = await fetch('/reset-transcription', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename })
+        });
+        const resetData = await resetResp.json().catch(() => ({}));
+        if (!resetResp.ok || resetData.error) {
+            throw new Error(resetData.error || 'Reset failed.');
+        }
+
+        footerActions.classList.add('hidden');
+        transcriptionContent.innerHTML = '<div class="placeholder-text">Your transcription will appear here...</div>';
+        segments = [];
+        lastSegmentCount = 0;
+        renderOcrSummary({});
+
+        if (resetData.task?.status === 'uploaded') {
+            updateUI(resetData.task);
+            return;
+        }
+
+        await uploadCurrentFileToCloud();
+    } catch (err) {
+        statusText.textContent = `Reset failed: ${err.message}`;
+    } finally {
+        resetTranscriptionBtn.disabled = false;
+    }
+}
+
+resetTranscriptionBtn.addEventListener('click', resetCurrentTranscription);
+
 
 // ─── Start Diarization & Transcription ───
 
@@ -521,7 +638,7 @@ startDiarizationBtn.onclick = async () => {
     statusText.textContent = '🗣️ Identifying speakers (GPU Processing)...';
 
     try {
-        let url = `/process-cloud/${currentTaskId}?min_speakers=${minSpeakers}&max_speakers=${maxSpeakers}`;
+        let url = `/process-cloud/${encodeURIComponent(currentTaskId)}?min_speakers=${minSpeakers}&max_speakers=${maxSpeakers}`;
         if (numSpeakers) url += `&num_speakers=${numSpeakers}`;
         const body = currentIsVideo ? { known_speakers: parseKnownParticipants() } : {};
         const r = await fetch(url, {
@@ -543,14 +660,14 @@ startDiarizationBtn.onclick = async () => {
 async function runLocalOcr(engine) {
     if (!currentTaskId || !currentIsVideo) return;
 
-    const activeBtn = engine === 'hunyuan' ? localHunyuanTestBtn : localTestBtn;
+    const activeBtn = engine === 'hybrid' ? localHunyuanTestBtn : localTestBtn;
     activeBtn.disabled = true;
-    activeBtn.textContent = engine === 'hunyuan' ? 'Running Hunyuan...' : 'Running Paddle...';
+    activeBtn.textContent = engine === 'hybrid' ? 'Running fallback...' : 'Running Paddle...';
     progressSection.classList.remove('hidden');
     statusText.textContent = `Running local ${engine} OCR diarization on this computer...`;
 
     try {
-        const response = await fetch(`/process-local/${currentTaskId}`, {
+        const response = await fetch(`/process-local/${encodeURIComponent(currentTaskId)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -568,12 +685,14 @@ async function runLocalOcr(engine) {
     } catch (err) {
         statusText.textContent = `Local ${engine} OCR error: ${err.message}`;
         activeBtn.disabled = false;
-        activeBtn.textContent = engine === 'hunyuan' ? 'Run local Hunyuan OCR' : 'Run local Paddle OCR';
+        activeBtn.textContent = engine === 'hybrid' ? 'Run Paddle + Hunyuan fallback' : 'Run local Paddle OCR';
     }
 }
 
+deleteAllS3Btn.addEventListener('click', deleteAllS3Files);
+
 localTestBtn.onclick = () => runLocalOcr('paddle');
-localHunyuanTestBtn.onclick = () => runLocalOcr('hunyuan');
+localHunyuanTestBtn.onclick = () => runLocalOcr('hybrid');
 
 startTranscriptionBtn.onclick = async () => {
     if (!currentTaskId) return;
@@ -584,7 +703,7 @@ startTranscriptionBtn.onclick = async () => {
     statusText.textContent = '🧠 Transcribing and aligning (GPU Processing)...';
 
     try {
-        const r = await fetch(`/transcribe-cloud/${currentTaskId}`, { method: 'POST' });
+        const r = await fetch(`/transcribe-cloud/${encodeURIComponent(currentTaskId)}`, { method: 'POST' });
         const cloudResult = await r.json();
         if (cloudResult.status === 'started' || cloudResult.status === 'completed') {
             startPolling();
@@ -611,7 +730,7 @@ function startPolling(intervalMs = 2000) {
         if (!currentTaskId) return;
 
         try {
-            const response = await fetch(`/status/${currentTaskId}`);
+            const response = await fetch(`/status/${encodeURIComponent(currentTaskId)}`);
             const data = await response.json();
 
             updateUI(data);
@@ -678,7 +797,7 @@ function updateUI(data) {
         localTestBtn.disabled = false;
         localTestBtn.textContent = 'Run local Paddle OCR';
         localHunyuanTestBtn.disabled = false;
-        localHunyuanTestBtn.textContent = 'Run local Hunyuan OCR';
+        localHunyuanTestBtn.textContent = 'Run Paddle + Hunyuan fallback';
         renderOcrSummary(data);
         statusText.textContent = '✅ Diarization complete. Ready to Transcribe.';
         clearInterval(statusInterval);

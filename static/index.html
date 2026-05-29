@@ -167,7 +167,10 @@
                             <h3>S3 File Browser</h3>
                             <p>Live file list from the RunPod bucket. Refresh on page load and delete when needed.</p>
                         </div>
-                        <button id="refresh-s3-btn" class="s3-refresh-btn" type="button">Refresh</button>
+                        <div class="s3-browser-actions">
+                            <button id="refresh-s3-btn" class="s3-refresh-btn" type="button">Refresh</button>
+                            <button id="delete-all-s3-btn" class="s3-delete-all-btn" type="button">Delete everything</button>
+                        </div>
                     </div>
                     <div id="s3-browser-status" class="s3-browser-status">Loading files...</div>
                     <div id="s3-file-list" class="s3-file-list">
@@ -192,7 +195,7 @@
                     </button>
                     <button id="local-hunyuan-test-btn" class="local-test-btn local-hunyuan-test-btn hidden"
                         type="button">
-                        Run local Hunyuan OCR
+                        Run Paddle + Hunyuan fallback
                     </button>
                 </div>
 
@@ -306,6 +309,9 @@
                 <div id="footer-actions" class="footer-actions hidden">
                     <button id="open-json-btn" class="open-btn">
                         .json <span id="json-filename-span" class="hidden">transcript.json</span>
+                    </button>
+                    <button id="reset-transcription-btn" class="reset-transcription-btn" type="button">
+                        Reset transcription
                     </button>
                 </div>
 

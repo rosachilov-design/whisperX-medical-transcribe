@@ -18,6 +18,9 @@ MODEL_DIR = "/app/models"
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
 UNKNOWN_SPEAKER = "Unknown"
+ZOOM_DIARIZATION_MODE = os.environ.get("ZOOM_DIARIZATION_MODE", "robust").strip().lower()
+OCR_MAPPING_CONFIDENCE_THRESHOLD = 0.55
+OCR_MAPPING_MIN_OVERLAP_SECONDS = 2.0
 OCR_SAMPLE_FPS = 2
 OCR_MIN_CONFIDENCE = 0.10
 OCR_FUZZY_THRESHOLD = 75
@@ -256,6 +259,22 @@ def _clean_ocr_text(text):
     text = re.sub(r"\s+", " ", text)
     text = text.strip(" .,:;|/\\_-—–[](){}")
     return text
+
+
+def _normalize_known_speakers(value):
+    if not value:
+        return []
+
+    raw_items = value.split(";") if isinstance(value, str) else value
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        name = _clean_ocr_text(item)
+        if not name or name in seen:
+            continue
+        normalized.append(name)
+        seen.add(name)
+    return normalized
 
 
 def _is_name_like_text(text, min_confidence, confidence):
@@ -722,7 +741,7 @@ def build_zoom_ocr_timeline(video_path, known_speakers=None, sample_fps=OCR_SAMP
         raise RuntimeError("opencv-python-headless is required for Zoom .mp4 OCR diarization.") from exc
 
     regions = regions or OCR_REGIONS
-    known_speakers = [_clean_ocr_text(name) for name in (known_speakers or []) if _clean_ocr_text(name)]
+    known_speakers = _normalize_known_speakers(known_speakers)
     ocr = get_ocr()
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -788,6 +807,124 @@ def build_zoom_ocr_timeline(video_path, known_speakers=None, sample_fps=OCR_SAMP
         "low_confidence_intervals": _summarize_low_confidence_intervals(timeline),
     }
     return timeline, summary
+
+
+def _format_diarization_timeline(diarize_segments, source="pyannote"):
+    timeline = []
+    for _, row in diarize_segments.iterrows():
+        timeline.append({
+            "start": round(float(row["start"]), 3),
+            "end": round(float(row["end"]), 3),
+            "speaker": str(row["speaker"]),
+            "source": source,
+        })
+    return timeline
+
+
+def _run_pyannote_diarization(audio, min_speakers, max_speakers, num_speakers=None):
+    pipe = get_diarize()
+    exact = int(num_speakers) if num_speakers else None
+    min_value = int(min_speakers) if min_speakers else None
+    max_value = int(max_speakers) if max_speakers else None
+    print(f"Diarizing with pyannote (min={min_value}, max={max_value}, num={exact})...")
+
+    kwargs = {}
+    if min_value:
+        kwargs["min_speakers"] = min_value
+    if max_value:
+        kwargs["max_speakers"] = max_value
+    if exact:
+        kwargs["num_speakers"] = exact
+
+    return pipe(audio, **kwargs)
+
+
+def _overlap_seconds(left, right):
+    return max(
+        0.0,
+        min(float(left["end"]), float(right["end"])) - max(float(left["start"]), float(right["start"])),
+    )
+
+
+def map_pyannote_speakers_to_ocr_names(pyannote_timeline, ocr_timeline):
+    votes = {}
+    totals = {}
+    pyannote_speakers = {
+        turn.get("speaker", UNKNOWN_SPEAKER)
+        for turn in pyannote_timeline
+        if turn.get("speaker") and turn.get("speaker") != UNKNOWN_SPEAKER
+    }
+
+    for pyannote_turn in pyannote_timeline:
+        pyannote_speaker = pyannote_turn.get("speaker", UNKNOWN_SPEAKER)
+        if not pyannote_speaker or pyannote_speaker == UNKNOWN_SPEAKER:
+            continue
+
+        votes.setdefault(pyannote_speaker, {})
+        for ocr_turn in ocr_timeline:
+            ocr_speaker = ocr_turn.get("speaker", UNKNOWN_SPEAKER)
+            if not ocr_speaker or ocr_speaker == UNKNOWN_SPEAKER:
+                continue
+
+            overlap = _overlap_seconds(pyannote_turn, ocr_turn)
+            if overlap <= 0:
+                continue
+
+            votes[pyannote_speaker][ocr_speaker] = votes[pyannote_speaker].get(ocr_speaker, 0.0) + overlap
+            totals[pyannote_speaker] = totals.get(pyannote_speaker, 0.0) + overlap
+
+    mapping = {}
+    details = {}
+    for pyannote_speaker in sorted(pyannote_speakers):
+        name_votes = votes.get(pyannote_speaker, {})
+        if not name_votes:
+            details[pyannote_speaker] = {
+                "name": UNKNOWN_SPEAKER,
+                "accepted": False,
+                "confidence": 0.0,
+                "overlap_seconds": 0.0,
+                "votes": {},
+            }
+            continue
+
+        best_name, best_seconds = max(name_votes.items(), key=lambda item: item[1])
+        total = totals.get(pyannote_speaker, 0.0)
+        confidence = best_seconds / total if total > 0 else 0.0
+        accepted = (
+            best_seconds >= OCR_MAPPING_MIN_OVERLAP_SECONDS
+            and confidence >= OCR_MAPPING_CONFIDENCE_THRESHOLD
+        )
+
+        if accepted:
+            mapping[pyannote_speaker] = best_name
+
+        details[pyannote_speaker] = {
+            "name": best_name if accepted else UNKNOWN_SPEAKER,
+            "accepted": accepted,
+            "confidence": round(confidence, 4),
+            "overlap_seconds": round(best_seconds, 3),
+            "votes": {
+                name: round(seconds, 3)
+                for name, seconds in sorted(name_votes.items(), key=lambda item: item[1], reverse=True)
+            },
+        }
+
+    return mapping, details
+
+
+def apply_speaker_mapping_to_timeline(pyannote_timeline, speaker_mapping, fallback_speaker=UNKNOWN_SPEAKER):
+    named_timeline = []
+    for turn in pyannote_timeline:
+        raw_speaker = turn.get("speaker", UNKNOWN_SPEAKER)
+        mapped = speaker_mapping.get(raw_speaker, fallback_speaker)
+        named_timeline.append({
+            "start": turn["start"],
+            "end": turn["end"],
+            "speaker": mapped,
+            "source": "pyannote_ocr_map" if raw_speaker in speaker_mapping else "pyannote_ocr_unmapped",
+            "speaker_raw": raw_speaker,
+        })
+    return named_timeline
 
 
 def _normalize_speaker_label(label):
@@ -1283,11 +1420,17 @@ def handler(job):
     s3_creds = inp.get("s3_creds")
     language = inp.get("language", "ru")
     known_speakers = inp.get("known_speakers") or []
+    zoom_diarization_mode = (inp.get("diarization_mode") or ZOOM_DIARIZATION_MODE or "robust").strip().lower()
+    if zoom_diarization_mode in {"pyannote_ocr", "pyannote+ocr"}:
+        zoom_diarization_mode = "robust"
+    if zoom_diarization_mode in {"ocr", "ocr_only"}:
+        zoom_diarization_mode = "ocr_only"
     # Default to exactly 2 speakers for medical interviews (interviewer + respondent)
     # Setting num_speakers=2 forces pyannote to find the 2 most distinct voice clusters
     min_speakers = inp.get("min_speakers") or 2
     max_speakers = inp.get("max_speakers") or 2
-    num_speakers = inp.get("num_speakers") or 2
+    requested_num_speakers = inp.get("num_speakers")
+    num_speakers = requested_num_speakers or 2
     
     if not audio_url:
         return {"error": "Missing audio URL"}
@@ -1302,35 +1445,53 @@ def handler(job):
         
         response = {}
 
-        # 1a. Zoom video OCR diarization replaces pyannote for .mp4 files.
+        # 1a. Zoom video diarization.
         if action in ["diarize", "full"] and is_video_input:
-            print("Running Zoom OCR diarization for .mp4...")
+            print(f"Running Zoom video diarization mode={zoom_diarization_mode}...")
             timeline, ocr_summary = build_zoom_ocr_timeline(local_path, known_speakers=known_speakers)
-            diarize_segments = pd.DataFrame([
-                {"start": item["start"], "end": item["end"], "speaker": item["speaker"]}
-                for item in timeline
-            ])
-            response["timeline"] = timeline
+            response["ocr_timeline"] = timeline
             response["ocr_diarization"] = ocr_summary
+
+            if zoom_diarization_mode == "robust":
+                pyannote_segments = _run_pyannote_diarization(
+                    audio,
+                    min_speakers=min_speakers,
+                    max_speakers=max_speakers,
+                    num_speakers=requested_num_speakers,
+                )
+                pyannote_timeline = _format_diarization_timeline(pyannote_segments, source="pyannote")
+                speaker_mapping, mapping_details = map_pyannote_speakers_to_ocr_names(pyannote_timeline, timeline)
+                named_timeline = apply_speaker_mapping_to_timeline(pyannote_timeline, speaker_mapping)
+                diarize_segments = pd.DataFrame([
+                    {"start": item["start"], "end": item["end"], "speaker": item["speaker"]}
+                    for item in named_timeline
+                ])
+                response["timeline"] = named_timeline
+                response["pyannote_timeline"] = pyannote_timeline
+                response["speaker_name_mapping"] = mapping_details
+                response["ocr_diarization"]["mode"] = "robust"
+                response["ocr_diarization"]["mapping_confidence_threshold"] = OCR_MAPPING_CONFIDENCE_THRESHOLD
+                response["ocr_diarization"]["mapping_min_overlap_seconds"] = OCR_MAPPING_MIN_OVERLAP_SECONDS
+            else:
+                diarize_segments = pd.DataFrame([
+                    {"start": item["start"], "end": item["end"], "speaker": item["speaker"]}
+                    for item in timeline
+                ])
+                response["timeline"] = timeline
+                response["ocr_diarization"]["mode"] = "ocr_only"
 
             if action == "diarize":
                 return response
 
         # 1. Diarization (if requested or full)
         if action in ["diarize", "full"] and not is_video_input:
-            pipe = get_diarize()
-            print(f"🎙️ Diarizing (min={min_speakers}, max={max_speakers}, num={num_speakers})...")
-            diarize_segments = pipe(audio, min_speakers=min_speakers, max_speakers=max_speakers, num_speakers=num_speakers)
-
-            
-            # Format timeline for server.py compatibility
-            timeline = []
-            for _, row in diarize_segments.iterrows():
-                timeline.append({
-                    "start": round(row["start"], 3),
-                    "end": round(row["end"], 3),
-                    "speaker": row["speaker"]
-                })
+            diarize_segments = _run_pyannote_diarization(
+                audio,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                num_speakers=num_speakers,
+            )
+            timeline = _format_diarization_timeline(diarize_segments, source="pyannote")
             response["timeline"] = timeline
             
             if action == "diarize":

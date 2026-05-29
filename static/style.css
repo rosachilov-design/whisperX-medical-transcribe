@@ -274,8 +274,15 @@ body {
     line-height: 1.45;
 }
 
+.s3-browser-actions {
+    display: flex;
+    gap: 0.65rem;
+    flex-shrink: 0;
+}
+
 .s3-refresh-btn,
-.s3-delete-btn {
+.s3-delete-btn,
+.s3-delete-all-btn {
     border: 1px solid var(--border);
     background: rgba(255, 255, 255, 0.04);
     color: var(--text);
@@ -293,13 +300,15 @@ body {
 }
 
 .s3-refresh-btn:hover,
-.s3-delete-btn:hover {
+.s3-delete-btn:hover,
+.s3-delete-all-btn:hover {
     border-color: var(--border-hover);
     background: rgba(255, 255, 255, 0.08);
 }
 
 .s3-refresh-btn:disabled,
-.s3-delete-btn:disabled {
+.s3-delete-btn:disabled,
+.s3-delete-all-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
 }
@@ -365,7 +374,16 @@ body {
     background: rgba(239, 68, 68, 0.08);
 }
 
-.s3-delete-btn:hover {
+.s3-delete-all-btn {
+    padding: 0.7rem 0.95rem;
+    white-space: nowrap;
+    color: #fecaca;
+    border-color: rgba(239, 68, 68, 0.35);
+    background: rgba(127, 29, 29, 0.28);
+}
+
+.s3-delete-btn:hover,
+.s3-delete-all-btn:hover {
     color: white;
     border-color: rgba(239, 68, 68, 0.45);
     background: rgba(239, 68, 68, 0.16);
@@ -1386,9 +1404,13 @@ body {
 
 .footer-actions {
     margin-top: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
 }
 
-.open-btn {
+.open-btn,
+.reset-transcription-btn {
     width: 100%;
     padding: 1.2rem;
     background: rgba(0, 0, 0, 0.3);
@@ -1406,6 +1428,23 @@ body {
     background: var(--accent);
     color: white;
     box-shadow: 0 0 20px var(--accent-dim);
+}
+
+.reset-transcription-btn {
+    border-color: rgba(239, 68, 68, 0.32);
+    color: #fecaca;
+    background: rgba(239, 68, 68, 0.08);
+}
+
+.reset-transcription-btn:hover {
+    color: white;
+    background: rgba(239, 68, 68, 0.16);
+    border-color: rgba(239, 68, 68, 0.5);
+}
+
+.reset-transcription-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .transcription-list::-webkit-scrollbar {
@@ -1445,13 +1484,15 @@ body {
     }
 
     .s3-browser-header,
+    .s3-browser-actions,
     .s3-file-row {
         flex-direction: column;
         align-items: flex-start;
     }
 
     .s3-delete-btn,
-    .s3-refresh-btn {
+    .s3-refresh-btn,
+    .s3-delete-all-btn {
         width: 100%;
     }
 }

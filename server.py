@@ -29,6 +29,7 @@ import shutil
 
 import boto3
 from botocore.config import Config
+from boto3.s3.transfer import TransferConfig
 from dotenv import load_dotenv
 from preprocess_for_transcription import build_filter_chain
 
@@ -58,6 +59,9 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 S3_BUCKET = "ez2d4o9xmt"
 S3_ENDPOINT = "https://s3api-us-wa-1.runpod.io"
 S3_REGION = "us-wa-1"
+S3_MULTIPART_THRESHOLD = int(os.getenv("S3_MULTIPART_THRESHOLD", str(64 * 1024 * 1024)))
+S3_MULTIPART_CHUNKSIZE = int(os.getenv("S3_MULTIPART_CHUNKSIZE", str(64 * 1024 * 1024)))
+S3_MAX_CONCURRENCY = int(os.getenv("S3_MAX_CONCURRENCY", "4"))
 
 s3 = boto3.client(
     "s3",
@@ -67,6 +71,15 @@ s3 = boto3.client(
     aws_secret_access_key=os.getenv("RUNPOD_SECRET_KEY"),
     config=Config(signature_version="s3v4"),
 )
+
+
+def build_s3_transfer_config():
+    return TransferConfig(
+        multipart_threshold=S3_MULTIPART_THRESHOLD,
+        multipart_chunksize=S3_MULTIPART_CHUNKSIZE,
+        max_concurrency=S3_MAX_CONCURRENCY,
+        use_threads=True,
+    )
 
 # ─── RunPod API & SSH Config ───
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
@@ -203,12 +216,66 @@ def get_json_result_name(task):
     return Path(filename).with_suffix(".json").name
 
 
+def get_json_name_for_filename(filename: str) -> str:
+    return Path(filename).with_suffix(".json").name
+
+
 def serialize_task(task):
     serialized = dict(task)
     json_name = get_json_result_name(task)
     if json_name:
         serialized["json_path"] = json_name
     return serialized
+
+
+def find_remote_json_keys(filename: str, task: dict | None = None):
+    """Find likely JSON result objects for a task in the RunPod S3 bucket."""
+    json_names = {get_json_name_for_filename(filename)}
+    if task and task.get("s3_key"):
+        json_names.add(Path(task["s3_key"]).with_suffix(".json").name)
+
+    matches = []
+    continuation_token = None
+    while True:
+        params = {"Bucket": S3_BUCKET}
+        if continuation_token:
+            params["ContinuationToken"] = continuation_token
+
+        response = s3.list_objects_v2(**params)
+        for entry in response.get("Contents", []):
+            key = entry.get("Key", "")
+            if key and Path(key).name in json_names:
+                matches.append(key)
+
+        if not response.get("IsTruncated"):
+            break
+        continuation_token = response.get("NextContinuationToken")
+
+    return matches
+
+
+def delete_s3_keys(keys):
+    """Delete S3 objects one-by-one for RunPod S3 compatibility."""
+    deleted = 0
+    for key in keys:
+        if not key:
+            continue
+        s3.delete_object(Bucket=S3_BUCKET, Key=key)
+        deleted += 1
+    return deleted
+
+
+def delete_local_upload_files():
+    """Delete local server-side cached uploads/results."""
+    deleted = 0
+    for item in UPLOAD_DIR.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+        deleted += 1
+    transcriptions.clear()
+    return deleted
 
 
 def clean_hallucinations(text: str) -> str:
@@ -401,8 +468,6 @@ def upload_to_s3(file_path: Path, task_id: str):
             pct = min(int((uploaded / file_size) * 90), 90)
             transcriptions[task_id]["progress"] = pct
 
-        from boto3.s3.transfer import TransferConfig
-        
         # Use a safe ASCII key for S3 to prevent URL encoding mismatch with Signature v4
         safe_key = f"{uuid.uuid4().hex}_{int(time.time())}{file_path.suffix}"
 
@@ -411,7 +476,7 @@ def upload_to_s3(file_path: Path, task_id: str):
             S3_BUCKET,
             f"transcriber/uploads/{safe_key}",
             Callback=progress_callback,
-            Config=TransferConfig(multipart_threshold=2 * 1024 * 1024 * 1024)
+            Config=build_s3_transfer_config(),
         )
 
         transcriptions[task_id]["status"] = "uploaded"
@@ -663,6 +728,9 @@ async def process_cloud(
                     transcriptions[task_id]["timeline"] = output.get("timeline", [])
                     if output.get("ocr_diarization"):
                         transcriptions[task_id]["ocr_diarization"] = output.get("ocr_diarization")
+                    for layer_key in ("ocr_timeline", "pyannote_timeline", "speaker_name_mapping"):
+                        if output.get(layer_key) is not None:
+                            transcriptions[task_id][layer_key] = output.get(layer_key)
                     transcriptions[task_id]["result"] = format_transcription_segments(output.get("result", []))
                     transcriptions[task_id]["status"] = "completed"
                     transcriptions[task_id]["progress"] = 100
@@ -713,6 +781,7 @@ async def process_cloud(
                 "min_speakers": min_speakers,
                 "max_speakers": max_speakers,
                 "num_speakers": num_speakers,
+                "diarization_mode": (request_body or {}).get("diarization_mode") or "robust",
                 "known_speakers": known_speakers,
                 "hf_token": HF_TOKEN
             }
@@ -761,7 +830,7 @@ async def process_local(task_id: str, request_body: dict | None = Body(default=N
 
     known_speakers = normalize_known_speakers((request_body or {}).get("known_speakers"))
     ocr_engine = str((request_body or {}).get("ocr_engine") or "paddle").lower()
-    if ocr_engine not in {"paddle", "hunyuan"}:
+    if ocr_engine not in {"paddle", "hunyuan", "hybrid", "paddle_hunyuan_fallback"}:
         return JSONResponse(status_code=400, content={"error": f"Unsupported local OCR engine: {ocr_engine}"})
 
     threading.Thread(target=run_local_ocr_task, args=(task_id, known_speakers, ocr_engine), daemon=True).start()
@@ -773,7 +842,7 @@ async def upload_file(file: UploadFile = File(...)):
     """Save file locally and begin S3 upload in background."""
     file_path = UPLOAD_DIR / file.filename
     with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
+        shutil.copyfileobj(file.file, buffer)
 
     task_id = file.filename
 
@@ -852,6 +921,14 @@ class DeleteS3FileRequest(BaseModel):
     key: str
 
 
+class DeleteAllS3FilesRequest(BaseModel):
+    confirm: str
+
+
+class ResetTranscriptionRequest(BaseModel):
+    filename: str
+
+
 @app.post("/delete-s3-file")
 async def delete_s3_file(req: DeleteS3FileRequest):
     """Delete a file from the configured S3 bucket."""
@@ -866,23 +943,142 @@ async def delete_s3_file(req: DeleteS3FileRequest):
         return JSONResponse(status_code=500, content={"error": f"Could not delete S3 file: {e}"})
 
 
+@app.post("/delete-all-s3-files")
+async def delete_all_s3_files(req: DeleteAllS3FilesRequest):
+    """Delete every object from RunPod S3 and clear local server-side cache."""
+    if req.confirm != "DELETE ALL":
+        return JSONResponse(status_code=400, content={"error": "Confirmation phrase mismatch."})
+
+    try:
+        files = list_s3_bucket_files()
+        keys = [item["key"] for item in files]
+        deleted_remote = delete_s3_keys(keys)
+        deleted_local = delete_local_upload_files()
+        print(f"🗑️ Deleted all server files: remote={deleted_remote}, local={deleted_local}")
+        return {"status": "deleted", "deleted": deleted_remote, "deleted_remote": deleted_remote, "deleted_local": deleted_local}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Could not delete all S3 files: {e}"})
+
+
+@app.get("/transcription-storage/{filename}")
+async def get_transcription_storage(filename: str):
+    """Report where a transcription JSON currently exists."""
+    safe_filename = Path(filename).name
+    json_name = get_json_name_for_filename(safe_filename)
+    local_path = UPLOAD_DIR / json_name
+    task = transcriptions.get(safe_filename)
+
+    try:
+        remote_keys = find_remote_json_keys(safe_filename, task)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Could not check remote JSON files: {e}"})
+
+    return {
+        "filename": safe_filename,
+        "json_path": json_name,
+        "local_json_exists": local_path.exists(),
+        "remote_json_keys": remote_keys,
+        "remote_json_exists": bool(remote_keys),
+    }
+
+
+@app.post("/reset-transcription")
+async def reset_transcription(req: ResetTranscriptionRequest):
+    """Delete stored transcription JSON while preserving the uploaded media."""
+    safe_filename = Path(req.filename).name
+    if not safe_filename:
+        return JSONResponse(status_code=400, content={"error": "Missing filename."})
+
+    task = transcriptions.get(safe_filename)
+    json_name = get_json_name_for_filename(safe_filename)
+    local_path = UPLOAD_DIR / json_name
+    removed_local = False
+
+    try:
+        remote_keys = find_remote_json_keys(safe_filename, task)
+        deleted_remote = delete_s3_keys(remote_keys)
+
+        if local_path.exists():
+            local_path.unlink()
+            removed_local = True
+
+        reusable_task = None
+        if task and task.get("s3_key"):
+            reusable_task = {
+                "filename": safe_filename,
+                "is_video": is_video_filename(safe_filename),
+                "status": "uploaded",
+                "progress": 100,
+                "result": [],
+                "s3_key": task["s3_key"],
+            }
+            transcriptions[safe_filename] = reusable_task
+        else:
+            transcriptions.pop(safe_filename, None)
+
+        print(f"↩️ Reset transcription for {safe_filename}: local={removed_local}, remote={deleted_remote}")
+        return {
+            "status": "reset",
+            "filename": safe_filename,
+            "json_path": json_name,
+            "deleted_local": removed_local,
+            "deleted_remote": deleted_remote,
+            "remote_json_keys": remote_keys,
+            "task": serialize_task(reusable_task) if reusable_task else None,
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Could not reset transcription: {e}"})
+
+
 @app.get("/check/{filename}")
 async def check_transcription(filename: str):
     """Check if a transcription JSON already exists for this audio file."""
+    safe_filename = Path(filename).name
+
     # Check in-memory first
-    if filename in transcriptions and transcriptions[filename].get("status") == "completed":
-        return serialize_task(transcriptions[filename])
+    if safe_filename in transcriptions and transcriptions[safe_filename].get("status") == "completed":
+        data = serialize_task(transcriptions[safe_filename])
+        try:
+            data["remote_json_keys"] = find_remote_json_keys(safe_filename, transcriptions[safe_filename])
+            data["remote_json_exists"] = bool(data["remote_json_keys"])
+        except Exception:
+            data["remote_json_keys"] = []
+            data["remote_json_exists"] = False
+        return data
 
     # Check on disk
-    json_path = UPLOAD_DIR / Path(filename).with_suffix(".json")
+    json_path = UPLOAD_DIR / get_json_name_for_filename(safe_filename)
     if json_path.exists():
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                transcriptions[filename] = data
-                return serialize_task(data)
+                transcriptions[safe_filename] = data
+                serialized = serialize_task(data)
+                try:
+                    serialized["remote_json_keys"] = find_remote_json_keys(safe_filename, data)
+                    serialized["remote_json_exists"] = bool(serialized["remote_json_keys"])
+                except Exception:
+                    serialized["remote_json_keys"] = []
+                    serialized["remote_json_exists"] = False
+                return serialized
         except:
             pass
+
+    # Check RunPod/S3 for a matching result JSON even if it is not cached locally yet.
+    try:
+        remote_keys = find_remote_json_keys(safe_filename)
+        if remote_keys:
+            s3.download_file(S3_BUCKET, remote_keys[0], str(json_path))
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data.setdefault("filename", safe_filename)
+            transcriptions[safe_filename] = data
+            serialized = serialize_task(data)
+            serialized["remote_json_keys"] = remote_keys
+            serialized["remote_json_exists"] = True
+            return serialized
+    except Exception as e:
+        print(f"⚠️ Remote transcription check failed for {safe_filename}: {e}")
 
     return {"status": "not_found"}
 

@@ -74,6 +74,28 @@ def build_word(text, speaker, start, end):
 
 
 class TurnStabilityTests(unittest.TestCase):
+    def test_robust_mapping_uses_ocr_name_when_confident(self):
+        self.assertEqual(HANDLER._normalize_known_speakers("Anna; Sergey ;Anna"), ["Anna", "Sergey"])
+
+        pyannote_timeline = [
+            {"start": 0.0, "end": 4.0, "speaker": "SPEAKER_00"},
+            {"start": 4.0, "end": 7.0, "speaker": "SPEAKER_01"},
+        ]
+        ocr_timeline = [
+            {"start": 0.0, "end": 4.0, "speaker": "Anna"},
+            {"start": 4.0, "end": 7.0, "speaker": HANDLER.UNKNOWN_SPEAKER},
+        ]
+
+        mapping, details = HANDLER.map_pyannote_speakers_to_ocr_names(pyannote_timeline, ocr_timeline)
+        named_timeline = HANDLER.apply_speaker_mapping_to_timeline(pyannote_timeline, mapping)
+
+        self.assertEqual(mapping, {"SPEAKER_00": "Anna"})
+        self.assertTrue(details["SPEAKER_00"]["accepted"])
+        self.assertFalse(details["SPEAKER_01"]["accepted"])
+        self.assertEqual(named_timeline[0]["speaker"], "Anna")
+        self.assertEqual(named_timeline[1]["speaker"], HANDLER.UNKNOWN_SPEAKER)
+        self.assertEqual(named_timeline[1]["speaker_raw"], "SPEAKER_01")
+
     def test_false_split_inside_sentence_merges_back(self):
         split_segments = [
             HANDLER._words_to_segment(

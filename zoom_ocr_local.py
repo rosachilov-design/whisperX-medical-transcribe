@@ -638,6 +638,12 @@ def build_zoom_ocr_timeline(
     if ocr_engine == "hunyuan":
         ocr = get_hunyuan_ocr()
         read_candidate = _read_hunyuan_candidate
+    elif ocr_engine in {"hybrid", "paddle_hunyuan_fallback"}:
+        ocr = {
+            "paddle": get_ocr(),
+            "hunyuan": None,
+        }
+        read_candidate = None
     elif ocr_engine == "paddle":
         ocr = get_ocr()
         read_candidate = _read_ocr_candidate
@@ -667,7 +673,37 @@ def build_zoom_ocr_timeline(
         if on_progress is not None:
             on_progress(frame_index, max(total_frames, frame_index))
 
-        candidates = [read_candidate(ocr, frame, region) for region in regions]
+        if ocr_engine in {"hybrid", "paddle_hunyuan_fallback"}:
+            candidates = [_read_ocr_candidate(ocr["paddle"], frame, region) for region in regions]
+            should_fallback = False
+            if known_speakers:
+                should_fallback = _select_ocr_candidate(candidates, known_speakers, []) is None
+            else:
+                should_fallback = not any(
+                    _is_name_like_text(
+                        candidate.get("raw_text"),
+                        OCR_AUTO_CONFIDENCE,
+                        candidate.get("confidence", 0.0),
+                    )
+                    for candidate in candidates
+                )
+
+            if should_fallback:
+                if ocr["hunyuan"] is None:
+                    ocr["hunyuan"] = get_hunyuan_ocr()
+                hunyuan_candidates = [_read_hunyuan_candidate(ocr["hunyuan"], frame, region) for region in regions]
+                for candidate in hunyuan_candidates:
+                    candidate["engine"] = "hunyuan"
+                for candidate in candidates:
+                    candidate["engine"] = "paddle"
+                candidates = hunyuan_candidates + candidates
+            else:
+                for candidate in candidates:
+                    candidate["engine"] = "paddle"
+        else:
+            candidates = [read_candidate(ocr, frame, region) for region in regions]
+            for candidate in candidates:
+                candidate["engine"] = ocr_engine
         raw_samples.append({"t": round(t, 3), "candidates": candidates})
 
         if not known_speakers:
@@ -688,6 +724,7 @@ def build_zoom_ocr_timeline(
             "raw_text": selected.get("raw_text") if selected else None,
             "confidence": selected.get("confidence", 0.0) if selected else 0.0,
             "region": selected.get("region") if selected else None,
+            "engine": selected.get("engine") if selected else None,
         })
 
     smoothed_samples = _confirm_ocr_switches(_fill_internal_unknown_gaps(selected_samples))
