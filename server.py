@@ -490,6 +490,26 @@ def upload_to_s3(file_path: Path, task_id: str):
         print(f"❌ S3 upload failed: {e}")
 
 
+def require_uploaded_s3_key(task: dict):
+    """Return the full S3 object key for a task, or a 409 response if not ready."""
+    safe_key = task.get("s3_key")
+    if not safe_key:
+        status = task.get("status") or "unknown"
+        return None, JSONResponse(
+            status_code=409,
+            content={
+                "error": (
+                    f"File has not finished uploading to S3 yet (status: {status}). "
+                    "Wait until the upload is complete, then start cloud processing again."
+                )
+            },
+        )
+
+    if safe_key.startswith("transcriber/uploads/"):
+        return safe_key, None
+    return f"transcriber/uploads/{safe_key}", None
+
+
 @app.post("/diarize-cloud/{task_id}")
 async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int = 10, num_speakers: int = None):
     if task_id not in transcriptions:
@@ -545,8 +565,9 @@ async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
                 time.sleep(10)
 
     try:
-        safe_key = task.get("s3_key", task_id)
-        s3_key = f"transcriber/uploads/{safe_key}"
+        s3_key, error_response = require_uploaded_s3_key(task)
+        if error_response:
+            return error_response
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
         headers = {
             "Authorization": f"Bearer {RUNPOD_API_KEY}",
@@ -641,8 +662,9 @@ async def transcribe_cloud(task_id: str):
                 time.sleep(10)
 
     try:
-        safe_key = task.get("s3_key", task_id)
-        s3_key = f"transcriber/uploads/{safe_key}"
+        s3_key, error_response = require_uploaded_s3_key(task)
+        if error_response:
+            return error_response
         
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
         headers = {
@@ -757,8 +779,9 @@ async def process_cloud(
                 time.sleep(10)
 
     try:
-        safe_key = task.get("s3_key", task_id)
-        s3_key = f"transcriber/uploads/{safe_key}"
+        s3_key, error_response = require_uploaded_s3_key(task)
+        if error_response:
+            return error_response
         known_speakers = normalize_known_speakers((request_body or {}).get("known_speakers"))
 
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"

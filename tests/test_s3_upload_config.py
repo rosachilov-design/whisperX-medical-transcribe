@@ -129,6 +129,35 @@ class S3UploadConfigTests(unittest.TestCase):
         self.assertEqual(config.kwargs["max_concurrency"], 4)
         self.assertTrue(config.kwargs["use_threads"])
 
+    def test_cloud_processing_requires_completed_s3_upload(self):
+        server = load_server_module()
+
+        s3_key, response = server.require_uploaded_s3_key({"status": "uploading"})
+
+        self.assertIsNone(s3_key)
+        self.assertEqual(response["kwargs"]["status_code"], 409)
+        self.assertIn("not finished uploading", response["kwargs"]["content"]["error"])
+
+    def test_cloud_processing_uses_uploaded_s3_key(self):
+        server = load_server_module()
+
+        s3_key, response = server.require_uploaded_s3_key(
+            {"status": "uploaded", "s3_key": "abc123.m4a"}
+        )
+
+        self.assertIsNone(response)
+        self.assertEqual(s3_key, "transcriber/uploads/abc123.m4a")
+
+    def test_cloud_processing_keeps_prefixed_s3_key(self):
+        server = load_server_module()
+
+        s3_key, response = server.require_uploaded_s3_key(
+            {"status": "uploaded", "s3_key": "transcriber/uploads/abc123.m4a"}
+        )
+
+        self.assertIsNone(response)
+        self.assertEqual(s3_key, "transcriber/uploads/abc123.m4a")
+
 
 if __name__ == "__main__":
     unittest.main()

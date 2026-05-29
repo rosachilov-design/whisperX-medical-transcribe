@@ -20,7 +20,7 @@ def load_handler_module():
 
     fake_torch = types.ModuleType("torch")
     fake_torch.cuda = types.SimpleNamespace(
-        is_available=lambda: False,
+        is_available=lambda: True,
         empty_cache=lambda: None,
     )
 
