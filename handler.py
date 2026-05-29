@@ -11,7 +11,13 @@ from collections import Counter
 import pandas as pd
 
 # ─── Config & Init ───
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+if not torch.cuda.is_available():
+    raise RuntimeError(
+        "CUDA is required for this RunPod image. "
+        "Start the worker on a GPU pod with a compatible NVIDIA driver."
+    )
+
+DEVICE = "cuda"
 BATCH_SIZE = 16 
 COMPUTE_TYPE = "float32" # Use full precision to avoid glitches/cutoffs
 MODEL_DIR = "/app/models"

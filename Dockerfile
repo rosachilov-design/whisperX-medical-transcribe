@@ -8,7 +8,7 @@ FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/app/models
-ENV LOCAL_OCR_DEVICE=auto
+ENV LOCAL_OCR_DEVICE=gpu
 ENV ZOOM_DIARIZATION_MODE=robust
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -45,12 +45,14 @@ RUN pip install --no-cache-dir \
     opencv-python-headless \
     rapidfuzz
 
+# Do not import GPU Paddle during docker build: build workers do not expose the
+# host NVIDIA driver library (libcuda.so.1). Runtime OCR imports it on RunPod.
 RUN python - <<'PY'
+from importlib.metadata import version
 import torch
-import paddle
 
 print(f"torch {torch.__version__}, cuda {torch.version.cuda}")
-print(f"paddle {paddle.__version__}, cuda={paddle.is_compiled_with_cuda()}")
+print(f"paddlepaddle-gpu {version('paddlepaddle-gpu')}")
 PY
 
 # Pre-download models into the image for instant cold-starts.
