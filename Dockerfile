@@ -1,58 +1,72 @@
-# ═══════════════════════════════════════════════════════════════
-#  MODERNIZED STACK — PyTorch 2.4 / CUDA 12.4 / WhisperX 3.8.1
-# ═══════════════════════════════════════════════════════════════
+# syntax=docker/dockerfile:1.7
 
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+# Modernized stack: PyTorch 2.8 / CUDA 12.8 / WhisperX 3.8.1.
+# WhisperX 3.8.1 pins torch ~=2.8.0, so the base image and PyTorch
+# wheels must stay on the same CUDA generation to avoid NCCL symbol errors.
+FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/app/models
 ENV LOCAL_OCR_DEVICE=auto
 ENV ZOOM_DIARIZATION_MODE=robust
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg git build-essential libsndfile1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-# ─── Core ML Stack ───
-# WhisperX 3.8.1 strictly requires Torch 2.8.0 and Pyannote 4.0+. 
-# We explicitly include torchvision here so it upgrades alongside torch and doesn't get left behind (causing the nms error).
-RUN pip install --no-cache-dir --upgrade \
-    runpod requests setuptools \
-    torch torchvision torchaudio \
+# Base utilities.
+RUN pip install --no-cache-dir --upgrade runpod requests setuptools
+
+# PaddleOCR GPU runtime for RunPod. Install this before re-pinning PyTorch so
+# Paddle's CUDA dependencies cannot downgrade the NCCL library Torch imports.
+RUN pip install --no-cache-dir \
+    "paddlepaddle-gpu==3.3.0" \
+    -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+
+# Keep the PyTorch triplet explicit and CUDA-matched. This avoids importing a
+# Torch 2.8 wheel against an older NCCL shared library from the base image or
+# from another CUDA package repository.
+RUN pip install --no-cache-dir --force-reinstall \
+    "torch==2.8.0+cu128" \
+    "torchvision==0.23.0+cu128" \
+    "torchaudio==2.8.0+cu128" \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# Core ML stack.
+RUN pip install --no-cache-dir \
     "ctranslate2>=4.5.0" \
     "faster-whisper>=1.1.1" \
     "pyannote.audio>=4.0.0" \
     "whisperx==3.8.1" \
     paddleocr \
     opencv-python-headless \
-    rapidfuzz \
-    --extra-index-url https://download.pytorch.org/whl/cu124
+    rapidfuzz
 
-# PaddleOCR GPU runtime for RunPod. Keep this separate from the PyTorch index so
-# Paddle resolves against its CUDA wheel repository instead of PyPI CPU wheels.
-RUN pip install --no-cache-dir \
-    "paddlepaddle-gpu==3.3.0" \
-    -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+RUN python - <<'PY'
+import torch
+import paddle
 
-# ─── Pre-download Models ───
-# Bake models into the image for instant cold-starts
+print(f"torch {torch.__version__}, cuda {torch.version.cuda}")
+print(f"paddle {paddle.__version__}, cuda={paddle.is_compiled_with_cuda()}")
+PY
+
+# Pre-download models into the image for instant cold-starts.
 RUN python -c "import whisperx; whisperx.load_model('large-v3', 'cpu', compute_type='int8', download_root='/app/models')"
 
-ARG HF_TOKEN
-ENV HF_TOKEN=$HF_TOKEN
-
-# Russian alignment model (essential for your medical use case)
+# Russian alignment model (essential for your medical use case).
 RUN python -c "import whisperx; whisperx.load_align_model(language_code='ru', device='cpu', model_dir='/app/models')"
 
-# Optional: Pre-cache diarization (requires HF_TOKEN at build time or it skips)
-RUN python - <<'PY'
-import os
+# Optional: pre-cache diarization with a BuildKit secret named hf_token.
+RUN --mount=type=secret,id=hf_token python - <<'PY'
+from pathlib import Path
 from pyannote.audio import Pipeline
 
 model_name = "pyannote/speaker-diarization-community-1"
-token = os.environ.get("HF_TOKEN")
+secret_path = Path("/run/secrets/hf_token")
+token = secret_path.read_text().strip() if secret_path.exists() else ""
 
 if not token:
     print(f"Skipping diarization bake: HF_TOKEN not set for {model_name}.")
