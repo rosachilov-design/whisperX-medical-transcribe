@@ -63,6 +63,8 @@ S3_REGION = "us-wa-1"
 S3_MULTIPART_THRESHOLD = int(os.getenv("S3_MULTIPART_THRESHOLD", str(64 * 1024 * 1024)))
 S3_MULTIPART_CHUNKSIZE = int(os.getenv("S3_MULTIPART_CHUNKSIZE", str(64 * 1024 * 1024)))
 S3_MAX_CONCURRENCY = int(os.getenv("S3_MAX_CONCURRENCY", "4"))
+RUNPOD_ESTIMATED_SECONDS = int(os.getenv("RUNPOD_ESTIMATED_SECONDS", str(30 * 60)))
+SUPPORTED_AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav"}
 
 s3 = boto3.client(
     "s3",
@@ -190,6 +192,10 @@ def format_transcription_segments(result_segments):
 
 def is_video_filename(filename):
     return Path(filename or "").suffix.lower() == ".mp4"
+
+
+def is_supported_audio_filename(filename):
+    return Path(filename or "").suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
 
 
 def normalize_known_speakers(value):
@@ -548,6 +554,38 @@ def refresh_runpod_progress(task: dict):
     return True
 
 
+def format_elapsed(seconds):
+    seconds = max(0, int(seconds))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def mark_runpod_queued(task: dict, label: str):
+    task["runpod_submitted_at"] = task.get("runpod_submitted_at") or time.time()
+    elapsed = time.time() - task["runpod_submitted_at"]
+    task["progress"] = max(int(task.get("progress") or 0), 20)
+    task["runpod_stage"] = "queue"
+    task["runpod_progress_message"] = f"{label}: queued for {format_elapsed(elapsed)}"
+    task["runpod_elapsed_seconds"] = int(elapsed)
+
+
+def mark_runpod_processing(task: dict, label: str, floor: int = 25, ceiling: int = 95):
+    task["runpod_started_at"] = task.get("runpod_started_at") or time.time()
+    elapsed = time.time() - task["runpod_started_at"]
+    estimated = max(RUNPOD_ESTIMATED_SECONDS, 1)
+    estimated_progress = floor + int((ceiling - floor) * min(elapsed / estimated, 1.0))
+    task["progress"] = max(int(task.get("progress") or 0), estimated_progress)
+    task["runpod_stage"] = "processing_estimate"
+    task["runpod_progress_message"] = (
+        f"{label}: {format_elapsed(elapsed)} elapsed "
+        f"(estimated, waiting for RunPod result)"
+    )
+    task["runpod_elapsed_seconds"] = int(elapsed)
+
+
 @app.post("/diarize-cloud/{task_id}")
 async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int = 10, num_speakers: int = None):
     if task_id not in transcriptions:
@@ -599,10 +637,10 @@ async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
                 if status == "IN_PROGRESS":
                     transcriptions[task_id]["status"] = "diarizing"
                     if not refresh_runpod_progress(transcriptions[task_id]):
-                        transcriptions[task_id]["progress"] = 50
+                        mark_runpod_processing(transcriptions[task_id], "Diarization")
                 elif status == "IN_QUEUE":
                     transcriptions[task_id]["status"] = "diarizing"
-                    transcriptions[task_id]["progress"] = 20
+                    mark_runpod_queued(transcriptions[task_id], "Diarization")
 
                 time.sleep(5)
             except Exception as e:
@@ -646,6 +684,8 @@ async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
             task["status"] = "diarizing"
             task["progress"] = 10
             task["job_id"] = job_id
+            task["runpod_submitted_at"] = time.time()
+            task.pop("runpod_started_at", None)
             
             threading.Thread(target=poll_job, args=(job_id, task_id), daemon=True).start()
             print(f"🚀 Serverless Diarization Job Started: {job_id} for {task_id}")
@@ -705,10 +745,10 @@ async def transcribe_cloud(task_id: str):
                 if status == "IN_PROGRESS":
                     transcriptions[task_id]["status"] = "transcribing"
                     if not refresh_runpod_progress(transcriptions[task_id]):
-                        transcriptions[task_id]["progress"] = 50
+                        mark_runpod_processing(transcriptions[task_id], "Transcription")
                 elif status == "IN_QUEUE":
                     transcriptions[task_id]["status"] = "transcribing"
-                    transcriptions[task_id]["progress"] = 20
+                    mark_runpod_queued(transcriptions[task_id], "Transcription")
 
                 time.sleep(5)
             except Exception as e:
@@ -754,6 +794,8 @@ async def transcribe_cloud(task_id: str):
             task["status"] = "transcribing"
             task["progress"] = 10
             task["job_id"] = job_id
+            task["runpod_submitted_at"] = time.time()
+            task.pop("runpod_started_at", None)
             
             threading.Thread(target=poll_job, args=(job_id, task_id), daemon=True).start()
             print(f"🚀 Serverless Transcription Job Started: {job_id} for {task_id}")
@@ -831,10 +873,10 @@ async def process_cloud(
                 if status == "IN_PROGRESS":
                     transcriptions[task_id]["status"] = "processing"
                     if not refresh_runpod_progress(transcriptions[task_id]):
-                        transcriptions[task_id]["progress"] = 50
+                        mark_runpod_processing(transcriptions[task_id], "Cloud transcription")
                 elif status == "IN_QUEUE":
                     transcriptions[task_id]["status"] = "processing"
-                    transcriptions[task_id]["progress"] = 20
+                    mark_runpod_queued(transcriptions[task_id], "Cloud transcription")
 
                 time.sleep(5)
             except Exception as e:
@@ -883,6 +925,8 @@ async def process_cloud(
             task["status"] = "processing"
             task["progress"] = 10
             task["job_id"] = job_id
+            task["runpod_submitted_at"] = time.time()
+            task.pop("runpod_started_at", None)
 
             threading.Thread(target=poll_job, args=(job_id, task_id), daemon=True).start()
             print(f"Serverless full pipeline job started: {job_id} for {task_id}")
@@ -928,6 +972,12 @@ async def process_local(task_id: str, request_body: dict | None = Body(default=N
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     """Save file locally and begin S3 upload in background."""
+    if not is_supported_audio_filename(file.filename):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Only .m4a, .mp3, and .wav audio files are supported."},
+        )
+
     file_path = UPLOAD_DIR / file.filename
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -948,7 +998,7 @@ async def upload_file(file: UploadFile = File(...)):
 
     transcriptions[task_id] = {
         "filename": file.filename,
-        "is_video": is_video_filename(file.filename),
+        "is_video": False,
         "status": "uploading",
         "progress": 0,
         "result": [],

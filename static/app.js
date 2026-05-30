@@ -63,6 +63,79 @@ const podKeyInput = document.getElementById('pod-key-input');
 let podPollingInterval = null;
 let logPollingInterval = null;
 let currentIsVideo = false;
+const ACTIVE_TASK_STORAGE_KEY = 'transcriber.activeTask';
+const SUPPORTED_AUDIO_EXTENSIONS = ['.m4a', '.mp3', '.wav'];
+
+function isSupportedAudioFilename(filename = '') {
+    const lower = filename.toLowerCase();
+    return SUPPORTED_AUDIO_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+
+function rejectUnsupportedFile(filename = '') {
+    alert(`Unsupported file type: ${filename || 'unknown file'}\n\nUse M4A, MP3, or WAV audio files.`);
+}
+
+function persistActiveTask(taskId, filename = taskId) {
+    if (!taskId) return;
+    localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, JSON.stringify({
+        taskId,
+        filename,
+        savedAt: Date.now()
+    }));
+}
+
+function getPersistedActiveTask() {
+    try {
+        return JSON.parse(localStorage.getItem(ACTIVE_TASK_STORAGE_KEY) || 'null');
+    } catch {
+        return null;
+    }
+}
+
+function clearPersistedActiveTask() {
+    localStorage.removeItem(ACTIVE_TASK_STORAGE_KEY);
+}
+
+function showTaskInterface(filename) {
+    filenameDisplay.textContent = filename || 'Current transcription';
+    launchScreen.classList.add('hidden');
+    mainInterface.classList.remove('hidden');
+    setPlaybackMode(false);
+}
+
+async function restoreActiveTask() {
+    const saved = getPersistedActiveTask();
+    if (!saved?.taskId) return;
+
+    if (!isSupportedAudioFilename(saved.filename || saved.taskId)) {
+        clearPersistedActiveTask();
+        return;
+    }
+
+    currentTaskId = saved.taskId;
+    showTaskInterface(saved.filename || saved.taskId);
+    progressSection.classList.remove('hidden');
+    statusText.textContent = 'Restoring task status...';
+    percentText.textContent = '';
+    transcriptionContent.innerHTML = '<div class="placeholder-text">Restoring current transcription...</div>';
+
+    try {
+        const response = await fetch(`/status/${encodeURIComponent(currentTaskId)}`);
+        const data = await response.json();
+        if (data.status === 'not_found') {
+            clearPersistedActiveTask();
+            statusText.textContent = 'Previous task was not found. Choose the source file again.';
+            return;
+        }
+
+        updateUI(data);
+        if (['uploading', 'processing', 'diarizing', 'transcribing'].includes(data.status)) {
+            startPolling();
+        }
+    } catch (err) {
+        statusText.textContent = `Could not restore task status: ${err.message}`;
+    }
+}
 
 // ─── Dropzone & File Input ───
 
@@ -191,13 +264,14 @@ function formatS3Date(value) {
 }
 
 function renderS3Files(files) {
-    if (!files.length) {
+    const visibleFiles = files.filter(file => !String(file.name || file.key || '').toLowerCase().endsWith('.mp4'));
+    if (!visibleFiles.length) {
         s3FileList.innerHTML = '<div class="s3-empty-state">No files found in the bucket.</div>';
         return;
     }
 
     s3FileList.innerHTML = '';
-    files.forEach((file) => {
+    visibleFiles.forEach((file) => {
         const row = document.createElement('div');
         row.className = 's3-file-row';
         row.innerHTML = `
@@ -229,9 +303,11 @@ async function loadS3Files() {
             throw new Error(data.error || 'Failed to load S3 files.');
         }
 
-        renderS3Files(data.files || []);
-        s3BrowserStatus.textContent = `${(data.files || []).length} file(s) currently on the server.`;
-        deleteAllS3Btn.disabled = !(data.files || []).length;
+        const files = data.files || [];
+        const visibleFiles = files.filter(file => !String(file.name || file.key || '').toLowerCase().endsWith('.mp4'));
+        renderS3Files(files);
+        s3BrowserStatus.textContent = `${visibleFiles.length} file(s) currently on the server.`;
+        deleteAllS3Btn.disabled = !visibleFiles.length;
     } catch (err) {
         s3FileList.innerHTML = '<div class="s3-empty-state">Could not load bucket contents.</div>';
         s3BrowserStatus.textContent = `Error: ${err.message}`;
@@ -244,7 +320,7 @@ async function deleteAllS3Files() {
     const warning = [
         'Delete EVERY file from the RunPod S3 bucket?',
         '',
-        'This removes audio, video, JSON, and any other objects listed here from RunPod storage.',
+        'This removes audio, JSON, and any other objects listed here from RunPod storage.',
         'It also clears the local server uploads/results cache.',
         'This cannot be undone.'
     ].join('\n');
@@ -470,6 +546,7 @@ async function uploadCurrentFileToCloud() {
         });
         const data = await response.json();
         currentTaskId = data.task_id;
+        persistActiveTask(currentTaskId, currentFile?.name || data.task_id);
 
         if (data.task_id) {
             const statusResp = await fetch(`/status/${encodeURIComponent(data.task_id)}`);
@@ -487,13 +564,18 @@ async function uploadCurrentFileToCloud() {
 }
 
 async function handleFile(file) {
+    if (!isSupportedAudioFilename(file.name)) {
+        rejectUnsupportedFile(file.name);
+        return;
+    }
+
     currentFile = file;
     filenameDisplay.textContent = file.name;
     launchScreen.classList.add('hidden');
     mainInterface.classList.remove('hidden');
     knownSpeakers = [];
     renderSpeakerList();
-    setPlaybackMode(file.name.toLowerCase().endsWith('.mp4'));
+    setPlaybackMode(false);
 
     // Load local preview immediately
     const url = URL.createObjectURL(file);
@@ -511,6 +593,7 @@ async function handleFile(file) {
         if (checkData.status === 'completed' && checkData.result) {
             // Transcription exists! Load it directly
             currentTaskId = file.name;
+            persistActiveTask(currentTaskId, file.name);
             loadCompletedTranscription(checkData);
             return;
         }
@@ -716,6 +799,7 @@ startTranscriptionBtn.onclick = async () => {
 };
 
 newSessionBtn.onclick = () => {
+    clearPersistedActiveTask();
     location.reload();
 };
 
@@ -737,6 +821,7 @@ function startPolling(intervalMs = 2000) {
 
             if (data.status === 'completed' || data.status === 'not_found' || data.status === 'error') {
                 clearInterval(statusInterval);
+                if (data.status === 'not_found') clearPersistedActiveTask();
             }
         } catch (err) {
             console.error('Status check failed:', err);
@@ -1012,6 +1097,7 @@ document.querySelectorAll('.speed-btn').forEach(btn => {
 });
 
 removeFileBtn.onclick = () => {
+    clearPersistedActiveTask();
     launchScreen.classList.remove('hidden');
     mainInterface.classList.add('hidden');
     if (wavesurfer) wavesurfer.destroy();
@@ -1156,8 +1242,6 @@ async function checkPodStatus() {
 
         if (data.status === 'RUNNING') {
             startLogPolling();
-        } else {
-            stopLogPolling();
         }
     } catch (e) {
         podStatusBadge.textContent = 'ERROR';
@@ -1173,7 +1257,7 @@ function startPodPolling() {
 
 function startLogPolling() {
     if (logPollingInterval) return;
-    logPollingInterval = setInterval(async () => {
+    const fetchLogs = async () => {
         try {
             const resp = await fetch('/pod-logs');
             const data = await resp.json();
@@ -1193,7 +1277,10 @@ function startLogPolling() {
                 }
             }
         } catch (e) { console.error('Log fetch failed', e); }
-    }, 3000);
+    };
+
+    fetchLogs();
+    logPollingInterval = setInterval(fetchLogs, 3000);
 }
 
 function stopLogPolling() {
@@ -1233,9 +1320,11 @@ refreshS3Btn.onclick = () => {
 };
 
 // Start polling and load config on load
+startLogPolling();
 startPodPolling();
 loadConfig();
 loadS3Files();
+restoreActiveTask();
 
 window.seekTo = seekTo;
 window.setSegmentSpeaker = setSegmentSpeaker;

@@ -1,8 +1,5 @@
 .git
 .env
-.github/
-.venv/
-.vscode/
 __pycache__
 *.pyc
 
@@ -11,12 +8,6 @@ server.py
 static/
 uploads/
 cache/
-betterment/
-cleanup/
-logs-github/
-new stack/
-tests/
 *.tar.gz
 *.md
 *.docx
-*.txt
