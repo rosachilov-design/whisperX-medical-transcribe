@@ -2,7 +2,16 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [ "main", "master" ] # Runs whenever you push to main
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/whisperx-medical
+  BASE_TAG: base-cu128
 
 jobs:
   build-and-push:
@@ -20,14 +29,28 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v5
+      - name: Build and push base image
+        uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Dockerfile.base
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/whisperx-medical:latest
+          tags: ${{ env.IMAGE_NAME }}:${{ env.BASE_TAG }}
           secrets: |
             hf_token=${{ secrets.HF_TOKEN }}
-          # This helps with caching the large layers to speed up future builds
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/whisperx-medical:buildcache
-          cache-to: type=inline
+          cache-from: type=gha,scope=whisperx-medical-base
+          cache-to: type=gha,mode=max,scope=whisperx-medical-base
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ env.IMAGE_NAME }}:${{ env.BASE_TAG }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha,scope=whisperx-medical-app
+          cache-to: type=gha,mode=max,scope=whisperx-medical-app

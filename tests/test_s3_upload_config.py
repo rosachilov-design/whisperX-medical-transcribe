@@ -180,7 +180,7 @@ class S3UploadConfigTests(unittest.TestCase):
         )
 
     def test_dockerfile_pins_torchcodec_for_torch_2_8(self):
-        dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+        dockerfile = Path("Dockerfile.base").read_text(encoding="utf-8")
 
         self.assertIn('"torch==2.8.0+cu128"', dockerfile)
         self.assertIn('"torchcodec==0.7.0"', dockerfile)
