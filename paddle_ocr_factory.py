@@ -23,8 +23,15 @@ def _paddle_has_gpu():
 def resolve_ocr_device():
     """Return ``cpu`` or ``gpu:0`` (override with LOCAL_OCR_DEVICE=cpu|gpu|auto)."""
     override = (os.getenv("LOCAL_OCR_DEVICE") or "auto").strip().lower()
-    if override in ("cpu", "gpu", "gpu:0"):
-        return "gpu:0" if override.startswith("gpu") else "cpu"
+    if override in ("gpu", "gpu:0"):
+        if not _paddle_has_gpu():
+            raise RuntimeError(
+                "LOCAL_OCR_DEVICE=gpu was requested, but PaddlePaddle cannot see a CUDA GPU. "
+                "RunPod OCR must use a GPU worker with paddlepaddle-gpu installed."
+            )
+        return "gpu:0"
+    if override == "cpu":
+        return "cpu"
     if override not in ("", "auto"):
         raise ValueError(
             f"Invalid LOCAL_OCR_DEVICE={override!r}; use auto, cpu, or gpu."
@@ -47,7 +54,8 @@ def create_zoom_paddle_ocr():
     model, not a locale). We load ``cyrillic_PP-OCRv5_mobile_rec`` explicitly.
 
     Uses GPU when ``paddlepaddle-gpu`` is installed and CUDA is available, unless
-    ``LOCAL_OCR_DEVICE=cpu`` is set.
+    ``LOCAL_OCR_DEVICE=cpu`` is set. If ``LOCAL_OCR_DEVICE=gpu`` is set, missing
+    CUDA is a hard error.
     """
     try:
         from paddleocr import PaddleOCR

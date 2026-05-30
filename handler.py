@@ -7,6 +7,7 @@ import re
 import requests
 import tempfile
 import subprocess
+import time
 from collections import Counter
 import pandas as pd
 
@@ -36,6 +37,7 @@ OCR_AUTO_MIN_CLUSTER_COUNT = 3
 OCR_FILL_GAPS_SECONDS = 4.0
 OCR_MIN_SAME_NAME_FRAMES = 2
 OCR_MIN_SEGMENT_SECONDS = 0.75
+STAGE_PROGRESS_LOG_SECONDS = float(os.environ.get("STAGE_PROGRESS_LOG_SECONDS", "30"))
 OCR_REGIONS = [
     {
         "name": "bottom_left_name_bar",
@@ -134,9 +136,18 @@ MODELS = {
     "ocr": None
 }
 
+def _elapsed_seconds(started_at):
+    return f"{time.monotonic() - started_at:.1f}s"
+
+
+def _stage_log(message):
+    print(f"[stage] {message}", flush=True)
+
+
 def get_whisper():
     if MODELS["whisper"] is None:
-        print("🚀 Loading Whisper model (float32, high sensitivity VAD)...")
+        started_at = time.monotonic()
+        _stage_log("Loading Whisper model (large-v3, float32, high sensitivity VAD)...")
         vad_options = {"vad_onset": 0.450, "vad_offset": 0.363}
         MODELS["whisper"] = whisperx.load_model(
             "large-v3", 
@@ -145,12 +156,15 @@ def get_whisper():
             download_root=MODEL_DIR,
             vad_options=vad_options
         )
+        _stage_log(f"Whisper model ready in {_elapsed_seconds(started_at)}.")
     return MODELS["whisper"]
 
 def get_align(lang):
     if lang not in MODELS["align"]:
-        print(f"🚀 Loading Alignment model ({lang})...")
+        started_at = time.monotonic()
+        _stage_log(f"Loading alignment model ({lang})...")
         MODELS["align"][lang] = whisperx.load_align_model(language_code=lang, device=DEVICE, model_dir=MODEL_DIR)
+        _stage_log(f"Alignment model ({lang}) ready in {_elapsed_seconds(started_at)}.")
     return MODELS["align"][lang]
 
 def _build_diarization_pipeline(model_name):
@@ -188,8 +202,10 @@ def _build_diarization_pipeline(model_name):
 
 def get_diarize():
     if MODELS["diarize"] is None:
-        print(f"🚀 Loading Diarization pipeline ({DIARIZATION_MODEL})...")
+        started_at = time.monotonic()
+        _stage_log(f"Loading diarization pipeline ({DIARIZATION_MODEL})...")
         MODELS["diarize"] = _build_diarization_pipeline(DIARIZATION_MODEL)
+        _stage_log(f"Diarization pipeline loaded in {_elapsed_seconds(started_at)}.")
         
         # ═══ TUNE PYANNOTE HYPERPARAMETERS ═══
         # Access the underlying pyannote pipeline to adjust clustering/segmentation.
@@ -227,10 +243,12 @@ def get_diarize():
 
 def get_ocr():
     if MODELS["ocr"] is None:
-        print("Loading PaddleOCR model (CPU)...")
+        started_at = time.monotonic()
+        _stage_log("Loading PaddleOCR model...")
         from paddle_ocr_factory import create_zoom_paddle_ocr
 
         MODELS["ocr"] = create_zoom_paddle_ocr()
+        _stage_log(f"PaddleOCR model ready in {_elapsed_seconds(started_at)}.")
     return MODELS["ocr"]
 
 
@@ -762,12 +780,22 @@ def build_zoom_ocr_timeline(video_path, known_speakers=None, sample_fps=OCR_SAMP
     raw_samples = []
     discovery_candidates = []
     step = 1.0 / float(sample_fps)
+    total_samples = max(1, int(duration * sample_fps) + 1) if duration > 0 else 1
+    ocr_started_at = time.monotonic()
+    next_progress_log_at = ocr_started_at + STAGE_PROGRESS_LOG_SECONDS
+    samples_read = 0
+    _stage_log(
+        "Zoom OCR scan started: "
+        f"duration={duration:.1f}s, sample_fps={sample_fps}, regions={len(regions)}, "
+        f"estimated_ocr_calls={total_samples * len(regions)}."
+    )
     t = 0.0
     while t <= duration + 0.001:
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
         ok, frame = cap.read()
         if not ok:
             break
+        samples_read += 1
 
         candidates = [_read_ocr_candidate(ocr, frame, region) for region in regions]
         raw_samples.append({"t": round(t, 3), "candidates": candidates})
@@ -777,9 +805,22 @@ def build_zoom_ocr_timeline(video_path, known_speakers=None, sample_fps=OCR_SAMP
                 if _is_name_like_text(candidate.get("raw_text"), OCR_AUTO_CONFIDENCE, candidate.get("confidence", 0.0)):
                     discovery_candidates.append(candidate["raw_text"])
 
+        now = time.monotonic()
+        if now >= next_progress_log_at:
+            pct = min(100.0, samples_read * 100.0 / total_samples)
+            _stage_log(
+                "Zoom OCR progress: "
+                f"{samples_read}/{total_samples} samples ({pct:.1f}%), "
+                f"video_t={t:.1f}s/{duration:.1f}s, elapsed={_elapsed_seconds(ocr_started_at)}."
+            )
+            next_progress_log_at = now + STAGE_PROGRESS_LOG_SECONDS
         t += step
 
     cap.release()
+    _stage_log(
+        "Zoom OCR frame scan complete: "
+        f"{samples_read}/{total_samples} samples, elapsed={_elapsed_seconds(ocr_started_at)}."
+    )
 
     discovered_speakers = [] if known_speakers else _cluster_discovered_speakers(discovery_candidates)
 
@@ -812,6 +853,11 @@ def build_zoom_ocr_timeline(video_path, known_speakers=None, sample_fps=OCR_SAMP
         "unknown_rate": round(unknown_duration / total_duration, 4) if total_duration else 1.0,
         "low_confidence_intervals": _summarize_low_confidence_intervals(timeline),
     }
+    _stage_log(
+        "Zoom OCR timeline ready: "
+        f"intervals={len(timeline)}, unknown_rate={summary['unknown_rate']}, "
+        f"elapsed={_elapsed_seconds(ocr_started_at)}."
+    )
     return timeline, summary
 
 
@@ -832,7 +878,8 @@ def _run_pyannote_diarization(audio, min_speakers, max_speakers, num_speakers=No
     exact = int(num_speakers) if num_speakers else None
     min_value = int(min_speakers) if min_speakers else None
     max_value = int(max_speakers) if max_speakers else None
-    print(f"Diarizing with pyannote (min={min_value}, max={max_value}, num={exact})...")
+    started_at = time.monotonic()
+    _stage_log(f"Pyannote diarization started (min={min_value}, max={max_value}, num={exact})...")
 
     kwargs = {}
     if min_value:
@@ -842,7 +889,13 @@ def _run_pyannote_diarization(audio, min_speakers, max_speakers, num_speakers=No
     if exact:
         kwargs["num_speakers"] = exact
 
-    return pipe(audio, **kwargs)
+    segments = pipe(audio, **kwargs)
+    try:
+        segment_count = len(segments)
+    except Exception:
+        segment_count = "unknown"
+    _stage_log(f"Pyannote diarization complete: segments={segment_count}, elapsed={_elapsed_seconds(started_at)}.")
+    return segments
 
 
 def _overlap_seconds(left, right):
@@ -1420,6 +1473,7 @@ def download_file(url: str, s3_creds: dict = None) -> str:
 # ─── Handler ───
 
 def handler(job):
+    job_started_at = time.monotonic()
     inp = job["input"]
     action = inp.get("action", "full") # default to full if not specified
     audio_url = inp.get("audio") or inp.get("audio_url")
@@ -1444,16 +1498,28 @@ def handler(job):
     local_path = None
     audio_path_for_transcription = None
     try:
+        download_started_at = time.monotonic()
+        _stage_log(f"Downloading input for action={action}...")
         local_path = download_file(audio_url, s3_creds)
+        _stage_log(f"Input downloaded in {_elapsed_seconds(download_started_at)}.")
         is_video_input = is_mp4_path(local_path) or is_mp4_path(audio_url)
-        audio_path_for_transcription = extract_audio_for_transcription(local_path) if is_video_input else local_path
+        if is_video_input:
+            extract_started_at = time.monotonic()
+            _stage_log("Extracting audio from video for transcription/diarization...")
+            audio_path_for_transcription = extract_audio_for_transcription(local_path)
+            _stage_log(f"Audio extraction complete in {_elapsed_seconds(extract_started_at)}.")
+        else:
+            audio_path_for_transcription = local_path
+        load_audio_started_at = time.monotonic()
+        _stage_log("Loading audio waveform...")
         audio = whisperx.load_audio(audio_path_for_transcription)
+        _stage_log(f"Audio waveform loaded in {_elapsed_seconds(load_audio_started_at)}.")
         
         response = {}
 
         # 1a. Zoom video diarization.
         if action in ["diarize", "full"] and is_video_input:
-            print(f"Running Zoom video diarization mode={zoom_diarization_mode}...")
+            _stage_log(f"Running Zoom video diarization mode={zoom_diarization_mode}...")
             timeline, ocr_summary = build_zoom_ocr_timeline(local_path, known_speakers=known_speakers)
             response["ocr_timeline"] = timeline
             response["ocr_diarization"] = ocr_summary
@@ -1506,13 +1572,17 @@ def handler(job):
         # 2. Transcription (if requested or full)
         if action in ["transcribe", "full"]:
             model = get_whisper()
-            print("📝 Transcribing...")
+            transcribe_started_at = time.monotonic()
+            _stage_log("Transcription started...")
             result = model.transcribe(audio, batch_size=BATCH_SIZE, language=language)
+            _stage_log(f"Transcription complete in {_elapsed_seconds(transcribe_started_at)}.")
             
             # 3. Alignment
-            print("🎯 Aligning...")
+            align_started_at = time.monotonic()
+            _stage_log("Alignment started...")
             model_a, metadata = get_align(language)
             result = whisperx.align(result["segments"], model_a, metadata, audio, DEVICE, return_char_alignments=False)
+            _stage_log(f"Alignment complete in {_elapsed_seconds(align_started_at)}.")
             
             # 4. Assign Speakers (if we have diarization info)
             if action == "full":
@@ -1524,7 +1594,7 @@ def handler(job):
                 result = whisperx.assign_word_speakers(provided_timeline, result, fill_nearest=False)
 
             # 5. Split segments at word-level speaker boundaries
-            print("✂️ Splitting segments by word-level speaker assignments...")
+            _stage_log("Splitting segments by word-level speaker assignments...")
             split_segments = split_by_word_speakers(result["segments"])
             refined_segments = repair_short_acknowledgement_speakers(split_segments)
             refined_segments = repair_fragmented_turns(refined_segments)
@@ -1543,10 +1613,11 @@ def handler(job):
             
             response["result"] = final_segments
 
+        _stage_log(f"Job complete in {_elapsed_seconds(job_started_at)}.")
         return response
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        _stage_log(f"Job failed after {_elapsed_seconds(job_started_at)}: {e}")
         return {"error": str(e)}
     finally:
         if audio_path_for_transcription and audio_path_for_transcription != local_path and os.path.exists(audio_path_for_transcription):
