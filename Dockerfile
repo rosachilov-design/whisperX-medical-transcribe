@@ -39,6 +39,7 @@ RUN pip install --no-cache-dir --force-reinstall \
 RUN pip install --no-cache-dir \
     "ctranslate2>=4.5.0" \
     "faster-whisper>=1.1.1" \
+    "torchcodec==0.7.0" \
     "pyannote.audio>=4.0.0" \
     "whisperx==3.8.1" \
     paddleocr \
@@ -53,6 +54,7 @@ import torch
 
 print(f"torch {torch.__version__}, cuda {torch.version.cuda}")
 print(f"paddlepaddle-gpu {version('paddlepaddle-gpu')}")
+print(f"torchcodec {version('torchcodec')}")
 PY
 
 # Pre-download models into the image for instant cold-starts.

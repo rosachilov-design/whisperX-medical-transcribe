@@ -767,6 +767,7 @@ function updateUI(data) {
     else if (data.status === 'processing') {
         progressSection.classList.remove('hidden');
         statusText.textContent = 'Diarizing, transcribing, and aligning...';
+        if (data.runpod_progress_message) statusText.textContent = data.runpod_progress_message;
         percentText.textContent = `${data.progress || 0}%`;
         progressBar.style.width = `${data.progress || 0}%`;
     }
@@ -817,6 +818,10 @@ function updateUI(data) {
         statusText.textContent = `❌ Error: ${data.error || 'Unknown'}`;
         percentText.textContent = '';
         progressBar.style.width = '0%';
+    }
+
+    if (data.runpod_progress_message && ['processing', 'diarizing', 'transcribing'].includes(data.status)) {
+        statusText.textContent = data.runpod_progress_message;
     }
 
     // Handle live result segments (if transcribing locally)

@@ -3,6 +3,7 @@ import runpod
 import whisperx
 import torch
 import gc
+import json
 import re
 import requests
 import tempfile
@@ -38,6 +39,7 @@ OCR_FILL_GAPS_SECONDS = 4.0
 OCR_MIN_SAME_NAME_FRAMES = 2
 OCR_MIN_SEGMENT_SECONDS = 0.75
 STAGE_PROGRESS_LOG_SECONDS = float(os.environ.get("STAGE_PROGRESS_LOG_SECONDS", "30"))
+PROGRESS_UPLOAD_SECONDS = float(os.environ.get("PROGRESS_UPLOAD_SECONDS", "1"))
 OCR_REGIONS = [
     {
         "name": "bottom_left_name_bar",
@@ -142,6 +144,48 @@ def _elapsed_seconds(started_at):
 
 def _stage_log(message):
     print(f"[stage] {message}", flush=True)
+
+
+def _audio_duration_seconds(audio, sample_rate=16000):
+    try:
+        return max(0.0, float(len(audio)) / float(sample_rate))
+    except Exception:
+        return 0.0
+
+
+def _format_progress_time(seconds):
+    seconds = max(0, int(seconds or 0))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def _build_s3_progress_writer(s3_creds, progress_key):
+    if not s3_creds or not progress_key:
+        return None
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=s3_creds["endpoint"],
+        region_name=s3_creds["region"],
+        aws_access_key_id=s3_creds["access_key"],
+        aws_secret_access_key=s3_creds["secret_key"],
+        config=Config(signature_version="s3v4"),
+    )
+    bucket = s3_creds["bucket"]
+    last_uploaded_at = [0.0]
+
+    def write_progress(payload, force=False):
+        now = time.monotonic()
+        if not force and now - last_uploaded_at[0] < PROGRESS_UPLOAD_SECONDS:
+            return
+        last_uploaded_at[0] = now
+        s3.put_object(
+            Bucket=bucket,
+            Key=progress_key,
+            Body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
+
+    return write_progress
 
 
 def get_whisper():
@@ -873,11 +917,12 @@ def _format_diarization_timeline(diarize_segments, source="pyannote"):
     return timeline
 
 
-def _run_pyannote_diarization(audio, min_speakers, max_speakers, num_speakers=None):
+def _run_pyannote_diarization(audio, min_speakers, max_speakers, num_speakers=None, progress_writer=None):
     pipe = get_diarize()
     exact = int(num_speakers) if num_speakers else None
     min_value = int(min_speakers) if min_speakers else None
     max_value = int(max_speakers) if max_speakers else None
+    duration = _audio_duration_seconds(audio)
     started_at = time.monotonic()
     _stage_log(f"Pyannote diarization started (min={min_value}, max={max_value}, num={exact})...")
 
@@ -889,7 +934,62 @@ def _run_pyannote_diarization(audio, min_speakers, max_speakers, num_speakers=No
     if exact:
         kwargs["num_speakers"] = exact
 
-    segments = pipe(audio, **kwargs)
+    def report_progress(current, total, unit="seconds", label="Pyannote diarization"):
+        if not progress_writer:
+            return
+        current = max(0.0, float(current or 0.0))
+        total = max(current, float(total or 0.0))
+        pct = min(99, int(current * 100 / total)) if total else 0
+        if unit == "seconds":
+            message = f"{label}: {_format_progress_time(current)} / {_format_progress_time(total)}"
+        else:
+            message = f"{label}: {int(current)}/{int(total)} {unit}"
+        progress_writer({
+            "stage": "pyannote",
+            "current": current,
+            "total": total,
+            "unit": unit,
+            "progress": pct,
+            "message": message,
+        })
+
+    def hook(step_name, step_artifact=None, file=None, **hook_kwargs):
+        if step_artifact is not None and hasattr(step_artifact, "end") and duration > 0:
+            report_progress(step_artifact.end, duration)
+            return
+        completed = hook_kwargs.get("completed") or hook_kwargs.get("current")
+        total = hook_kwargs.get("total")
+        if completed is not None and total:
+            report_progress(completed, total, unit="steps", label=f"Pyannote {step_name}")
+
+    if progress_writer:
+        progress_writer({
+            "stage": "pyannote",
+            "current": 0,
+            "total": duration,
+            "unit": "seconds",
+            "progress": 0,
+            "message": f"Pyannote diarization: 00:00 / {_format_progress_time(duration)}",
+        }, force=True)
+
+    try:
+        segments = pipe(audio, hook=hook, **kwargs)
+    except TypeError as exc:
+        if "hook" not in str(exc):
+            raise
+        _stage_log("Pyannote progress hook is not supported by this pipeline; continuing without detailed progress.")
+        segments = pipe(audio, **kwargs)
+
+    if progress_writer:
+        progress_writer({
+            "stage": "pyannote",
+            "current": duration,
+            "total": duration,
+            "unit": "seconds",
+            "progress": 99,
+            "message": f"Pyannote diarization: {_format_progress_time(duration)} / {_format_progress_time(duration)}",
+        }, force=True)
+
     try:
         segment_count = len(segments)
     except Exception:
@@ -1478,6 +1578,7 @@ def handler(job):
     action = inp.get("action", "full") # default to full if not specified
     audio_url = inp.get("audio") or inp.get("audio_url")
     s3_creds = inp.get("s3_creds")
+    progress_s3_key = inp.get("progress_s3_key")
     language = inp.get("language", "ru")
     known_speakers = inp.get("known_speakers") or []
     zoom_diarization_mode = (inp.get("diarization_mode") or ZOOM_DIARIZATION_MODE or "robust").strip().lower()
@@ -1514,6 +1615,7 @@ def handler(job):
         _stage_log("Loading audio waveform...")
         audio = whisperx.load_audio(audio_path_for_transcription)
         _stage_log(f"Audio waveform loaded in {_elapsed_seconds(load_audio_started_at)}.")
+        progress_writer = _build_s3_progress_writer(s3_creds, progress_s3_key)
         
         response = {}
 
@@ -1530,6 +1632,7 @@ def handler(job):
                     min_speakers=min_speakers,
                     max_speakers=max_speakers,
                     num_speakers=requested_num_speakers,
+                    progress_writer=progress_writer,
                 )
                 pyannote_timeline = _format_diarization_timeline(pyannote_segments, source="pyannote")
                 speaker_mapping, mapping_details = map_pyannote_speakers_to_ocr_names(pyannote_timeline, timeline)
@@ -1562,6 +1665,7 @@ def handler(job):
                 min_speakers=min_speakers,
                 max_speakers=max_speakers,
                 num_speakers=num_speakers,
+                progress_writer=progress_writer,
             )
             timeline = _format_diarization_timeline(diarize_segments, source="pyannote")
             response["timeline"] = timeline
@@ -1571,6 +1675,15 @@ def handler(job):
 
         # 2. Transcription (if requested or full)
         if action in ["transcribe", "full"]:
+            if progress_writer:
+                progress_writer({
+                    "stage": "transcription",
+                    "current": None,
+                    "total": None,
+                    "unit": "stage",
+                    "progress": 99,
+                    "message": "Transcribing and aligning...",
+                }, force=True)
             model = get_whisper()
             transcribe_started_at = time.monotonic()
             _stage_log("Transcription started...")

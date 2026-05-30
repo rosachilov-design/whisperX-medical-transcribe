@@ -5,6 +5,7 @@ import os
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 
@@ -36,6 +37,9 @@ class FakeS3Client:
 
     def download_file(self, *args, **kwargs):
         return None
+
+    def get_object(self, *args, **kwargs):
+        raise FileNotFoundError
 
 
 def load_server_module():
@@ -157,6 +161,29 @@ class S3UploadConfigTests(unittest.TestCase):
 
         self.assertIsNone(response)
         self.assertEqual(s3_key, "transcriber/uploads/abc123.m4a")
+
+    def test_runpod_completed_output_error_is_detected(self):
+        server = load_server_module()
+
+        self.assertEqual(
+            server.get_runpod_output_error({"error": "torchcodec failed"}),
+            "torchcodec failed",
+        )
+        self.assertIsNone(server.get_runpod_output_error({"result": []}))
+
+    def test_progress_s3_key_uses_uploaded_audio_key(self):
+        server = load_server_module()
+
+        self.assertEqual(
+            server.get_progress_s3_key({"s3_key": "transcriber/uploads/abc123.m4a"}),
+            "transcriber/progress/abc123.progress.json",
+        )
+
+    def test_dockerfile_pins_torchcodec_for_torch_2_8(self):
+        dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn('"torch==2.8.0+cu128"', dockerfile)
+        self.assertIn('"torchcodec==0.7.0"', dockerfile)
 
 
 if __name__ == "__main__":

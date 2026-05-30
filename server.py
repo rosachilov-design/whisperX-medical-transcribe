@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from pathlib import PurePosixPath
 import requests as http_requests
 import paramiko
 from scp import SCPClient
@@ -510,6 +511,43 @@ def require_uploaded_s3_key(task: dict):
     return f"transcriber/uploads/{safe_key}", None
 
 
+def get_runpod_output_error(output):
+    """Return a handler-level error from RunPod output, if one was returned."""
+    if isinstance(output, dict) and output.get("error"):
+        return str(output["error"])
+    return None
+
+
+def get_progress_s3_key(task: dict):
+    safe_key = task.get("s3_key")
+    if not safe_key:
+        return None
+    upload_name = PurePosixPath(safe_key).name
+    progress_name = PurePosixPath(upload_name).with_suffix(".progress.json").name
+    return f"transcriber/progress/{progress_name}"
+
+
+def refresh_runpod_progress(task: dict):
+    progress_key = task.get("progress_s3_key")
+    if not progress_key:
+        return False
+
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=progress_key)
+        payload = json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception:
+        return False
+
+    task["runpod_stage"] = payload.get("stage")
+    task["runpod_progress_message"] = payload.get("message")
+    task["pyannote_current"] = payload.get("current")
+    task["pyannote_total"] = payload.get("total")
+    task["pyannote_unit"] = payload.get("unit")
+    if payload.get("progress") is not None:
+        task["progress"] = max(int(task.get("progress") or 0), int(payload["progress"]))
+    return True
+
+
 @app.post("/diarize-cloud/{task_id}")
 async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int = 10, num_speakers: int = None):
     if task_id not in transcriptions:
@@ -533,7 +571,13 @@ async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
                 status = data.get("status")
                 
                 if status == "COMPLETED":
-                    output = data["output"]
+                    output = data.get("output") or {}
+                    output_error = get_runpod_output_error(output)
+                    if output_error:
+                        transcriptions[task_id]["status"] = "error"
+                        transcriptions[task_id]["error"] = output_error
+                        print(f"❌ Serverless Job Completed With Error ({job_id}): {output_error}")
+                        break
                     timeline = output.get("timeline", [])
                     
                     transcriptions[task_id]["timeline"] = timeline
@@ -554,7 +598,8 @@ async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
                 
                 if status == "IN_PROGRESS":
                     transcriptions[task_id]["status"] = "diarizing"
-                    transcriptions[task_id]["progress"] = 50
+                    if not refresh_runpod_progress(transcriptions[task_id]):
+                        transcriptions[task_id]["progress"] = 50
                 elif status == "IN_QUEUE":
                     transcriptions[task_id]["status"] = "diarizing"
                     transcriptions[task_id]["progress"] = 20
@@ -568,6 +613,7 @@ async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
         s3_key, error_response = require_uploaded_s3_key(task)
         if error_response:
             return error_response
+        task["progress_s3_key"] = get_progress_s3_key(task)
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
         headers = {
             "Authorization": f"Bearer {RUNPOD_API_KEY}",
@@ -577,6 +623,7 @@ async def diarize_cloud(task_id: str, min_speakers: int = 1, max_speakers: int =
             "input": {
                 "action": "diarize",
                 "audio": s3_key,
+                "progress_s3_key": task["progress_s3_key"],
                 "s3_creds": {
                     "endpoint": S3_ENDPOINT,
                     "region": S3_REGION,
@@ -635,7 +682,13 @@ async def transcribe_cloud(task_id: str):
                 status = data.get("status")
                 
                 if status == "COMPLETED":
-                    output = data["output"]
+                    output = data.get("output") or {}
+                    output_error = get_runpod_output_error(output)
+                    if output_error:
+                        transcriptions[task_id]["status"] = "error"
+                        transcriptions[task_id]["error"] = output_error
+                        print(f"❌ Serverless Job Completed With Error ({job_id}): {output_error}")
+                        break
                     transcriptions[task_id]["result"] = format_transcription_segments(output.get("result", []))
                     transcriptions[task_id]["status"] = "completed"
                     transcriptions[task_id]["progress"] = 100
@@ -651,7 +704,8 @@ async def transcribe_cloud(task_id: str):
                 
                 if status == "IN_PROGRESS":
                     transcriptions[task_id]["status"] = "transcribing"
-                    transcriptions[task_id]["progress"] = 50
+                    if not refresh_runpod_progress(transcriptions[task_id]):
+                        transcriptions[task_id]["progress"] = 50
                 elif status == "IN_QUEUE":
                     transcriptions[task_id]["status"] = "transcribing"
                     transcriptions[task_id]["progress"] = 20
@@ -665,6 +719,7 @@ async def transcribe_cloud(task_id: str):
         s3_key, error_response = require_uploaded_s3_key(task)
         if error_response:
             return error_response
+        task["progress_s3_key"] = get_progress_s3_key(task)
         
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
         headers = {
@@ -678,6 +733,7 @@ async def transcribe_cloud(task_id: str):
             "input": {
                 "action": "transcribe",
                 "audio": s3_key,
+                "progress_s3_key": task["progress_s3_key"],
                 "s3_creds": {
                     "endpoint": S3_ENDPOINT,
                     "region": S3_REGION,
@@ -746,7 +802,13 @@ async def process_cloud(
                 status = data.get("status")
 
                 if status == "COMPLETED":
-                    output = data["output"]
+                    output = data.get("output") or {}
+                    output_error = get_runpod_output_error(output)
+                    if output_error:
+                        transcriptions[task_id]["status"] = "error"
+                        transcriptions[task_id]["error"] = output_error
+                        print(f"Serverless job completed with error ({job_id}): {output_error}")
+                        break
                     transcriptions[task_id]["timeline"] = output.get("timeline", [])
                     if output.get("ocr_diarization"):
                         transcriptions[task_id]["ocr_diarization"] = output.get("ocr_diarization")
@@ -768,7 +830,8 @@ async def process_cloud(
 
                 if status == "IN_PROGRESS":
                     transcriptions[task_id]["status"] = "processing"
-                    transcriptions[task_id]["progress"] = 50
+                    if not refresh_runpod_progress(transcriptions[task_id]):
+                        transcriptions[task_id]["progress"] = 50
                 elif status == "IN_QUEUE":
                     transcriptions[task_id]["status"] = "processing"
                     transcriptions[task_id]["progress"] = 20
@@ -783,6 +846,7 @@ async def process_cloud(
         if error_response:
             return error_response
         known_speakers = normalize_known_speakers((request_body or {}).get("known_speakers"))
+        task["progress_s3_key"] = get_progress_s3_key(task)
 
         url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
         headers = {
@@ -794,6 +858,7 @@ async def process_cloud(
             "input": {
                 "action": "full",
                 "audio": s3_key,
+                "progress_s3_key": task["progress_s3_key"],
                 "s3_creds": {
                     "endpoint": S3_ENDPOINT,
                     "region": S3_REGION,
@@ -1112,6 +1177,8 @@ async def get_status(task_id: str):
     task = transcriptions.get(task_id)
     if not task:
         return {"status": "not_found"}
+    if task.get("status") in {"processing", "diarizing", "transcribing"}:
+        refresh_runpod_progress(task)
     return serialize_task(task)
 
 
