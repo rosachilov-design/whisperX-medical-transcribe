@@ -6,15 +6,16 @@ No GPU needed. Loads .json state files and pairs them with local audio.
 Also supports S3 upload for sending files to RunPod.
 """
 
-from fastapi import FastAPI, UploadFile, File, Body
+from fastapi import FastAPI, UploadFile, File, Form, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import os
 import sys
 import io
 import json
+import hashlib
 import re
 import subprocess
 import threading
@@ -33,6 +34,8 @@ from botocore.config import Config
 from boto3.s3.transfer import TransferConfig
 from dotenv import load_dotenv
 from preprocess_for_transcription import build_filter_chain
+from normalization_workflow import NormalizationWorkflowManager, RUNNING_STATUSES, WORKFLOW_SCHEMA_VERSION
+from conclusions_workflow import ConclusionsWorkflowManager
 
 # Load .env credentials
 load_dotenv()
@@ -65,6 +68,8 @@ S3_MULTIPART_CHUNKSIZE = int(os.getenv("S3_MULTIPART_CHUNKSIZE", str(64 * 1024 *
 S3_MAX_CONCURRENCY = int(os.getenv("S3_MAX_CONCURRENCY", "4"))
 RUNPOD_ESTIMATED_SECONDS = int(os.getenv("RUNPOD_ESTIMATED_SECONDS", str(30 * 60)))
 SUPPORTED_AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav"}
+S3_LIBRARY_MANIFEST_KEY = "transcriber/library-manifest.json"
+library_manifest_lock = threading.Lock()
 
 s3 = boto3.client(
     "s3",
@@ -101,6 +106,38 @@ pod_config = {
 # ─── State ───
 transcriptions = {}
 
+
+def upload_normalized_markdown(task_id: str, path: Path, checksum: str):
+    """Upload an operator-approved final Markdown file to the durable S3 area."""
+    task = transcriptions.get(task_id, {})
+    source_name = task.get("filename") or task_id
+    final_name = f"{Path(source_name).stem}_normalized.md"
+    key = f"transcriber/final/{PurePosixPath(final_name).name}"
+    s3.upload_file(
+        str(path),
+        S3_BUCKET,
+        key,
+        ExtraArgs={
+            "ContentType": "text/markdown; charset=utf-8",
+            "Metadata": {"sha256": checksum, "source-task": hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:16]},
+        },
+    )
+    return {
+        "status": "uploaded",
+        "bucket": S3_BUCKET,
+        "key": key,
+        "filename": final_name,
+        "sha256": checksum,
+        "uploaded_at": int(time.time()),
+    }
+
+
+normalization_manager = NormalizationWorkflowManager(
+    Path("normalization_runs"),
+    upload_callback=upload_normalized_markdown,
+)
+conclusions_manager = ConclusionsWorkflowManager(Path("conclusions_runs"))
+
 def download_results_from_s3():
     """Check S3 for finished JSON results and pull them to local uploads."""
     try:
@@ -112,12 +149,21 @@ def download_results_from_s3():
         found_new = False
         for obj in response['Contents']:
             s3_key = obj['Key']
+            if s3_key == S3_LIBRARY_MANIFEST_KEY:
+                continue
             # Strip the 'transcriber/uploads/' prefix if present
             base_name = s3_key.split('/')[-1] if '/' in s3_key else s3_key
             ext = Path(base_name).suffix.lower()
 
             if ext in result_exts:
                 local_path = UPLOAD_DIR / base_name
+                if s3_key.startswith("transcriber/results/"):
+                    result_stem = Path(base_name).stem
+                    for task_id, task in list(transcriptions.items()):
+                        audio_stem = PurePosixPath(str(task.get("s3_key") or "")).stem
+                        if audio_stem == result_stem:
+                            local_path = UPLOAD_DIR / Path(task.get("filename") or task_id).with_suffix(".json").name
+                            break
                 if not local_path.exists():
                     if not found_new:
                         print("☁️ New results found on cloud!")
@@ -146,6 +192,9 @@ def load_existing_tasks():
                 data = json.load(f)
                 task_id = data.get("filename")
                 if task_id:
+                    canonical_name = Path(task_id).with_suffix(".json").name
+                    if json_file.name != canonical_name and (UPLOAD_DIR / canonical_name).exists():
+                        continue
                     transcriptions[task_id] = data
                     print(f"  ✅ Loaded: {task_id}")
         except Exception as e:
@@ -272,19 +321,6 @@ def delete_s3_keys(keys):
     return deleted
 
 
-def delete_local_upload_files():
-    """Delete local server-side cached uploads/results."""
-    deleted = 0
-    for item in UPLOAD_DIR.iterdir():
-        if item.is_dir():
-            shutil.rmtree(item)
-        else:
-            item.unlink()
-        deleted += 1
-    transcriptions.clear()
-    return deleted
-
-
 def clean_hallucinations(text: str) -> str:
     """Remove common Russian Whisper hallucinations."""
     hallucination_patterns = [
@@ -307,9 +343,31 @@ def clean_hallucinations(text: str) -> str:
 def persist_task_json(task_id):
     """Persist the current transcription state as JSON."""
     task = transcriptions[task_id]
+    if task.get("status") == "completed" and task.get("s3_key"):
+        task["transcript_s3_key"] = get_transcript_s3_key(task)
     state_file = UPLOAD_DIR / get_json_result_name(task)
-    with open(state_file, "w", encoding="utf-8") as f:
-        json.dump(task, f, indent=2, ensure_ascii=False)
+    temp_state_file = state_file.with_name(f".{state_file.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(temp_state_file, "w", encoding="utf-8") as f:
+            json.dump(task, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_state_file, state_file)
+    finally:
+        if temp_state_file.exists():
+            temp_state_file.unlink()
+    if task.get("status") == "completed" and task.get("transcript_s3_key"):
+        try:
+            s3.upload_file(
+                str(state_file),
+                S3_BUCKET,
+                task["transcript_s3_key"],
+                ExtraArgs={"ContentType": "application/json"},
+            )
+        except Exception as e:
+            print(f"Transcript S3 save failed for {task_id}: {e}")
+    if task.get("s3_key") and task.get("status") in {"uploaded", "completed"}:
+        persist_library_mapping(task_id)
 
 
 def improve_audio_for_transcription(input_path: Path, output_path: Path):
@@ -428,9 +486,323 @@ def run_local_ocr_task(task_id: str, known_speakers=None, ocr_engine="paddle"):
         print(f"Local OCR failed for {task_id}: {e}", flush=True)
 
 
+def normalize_audio_s3_key(key: str) -> str:
+    normalized = str(key or "").strip()
+    if not normalized:
+        return ""
+    if normalized.startswith("transcriber/uploads/"):
+        return normalized
+    return f"transcriber/uploads/{PurePosixPath(normalized).name}"
+
+
+def get_transcript_s3_key(task: dict) -> str:
+    audio_key = normalize_audio_s3_key(task.get("s3_key"))
+    storage_stem = PurePosixPath(audio_key).stem
+    return f"transcriber/results/{storage_stem}.json"
+
+
+def find_task_by_s3_key(key: str):
+    normalized_key = normalize_audio_s3_key(key)
+    storage_name = PurePosixPath(normalized_key).name
+    for task_id, task in transcriptions.items():
+        task_key = normalize_audio_s3_key(task.get("s3_key"))
+        if task_key and (task_key == normalized_key or PurePosixPath(task_key).name == storage_name):
+            return task_id, task
+    return None, None
+
+
+def load_library_manifest():
+    """Load the durable original-name-to-S3-key mapping from the bucket."""
+    try:
+        response = s3.get_object(Bucket=S3_BUCKET, Key=S3_LIBRARY_MANIFEST_KEY)
+        body = response["Body"]
+        try:
+            payload = json.loads(body.read().decode("utf-8"))
+        finally:
+            body.close()
+        return payload if isinstance(payload, dict) else {"version": 1, "files": {}}
+    except Exception:
+        return {"version": 1, "files": {}}
+
+
+def persist_library_mapping(task_id: str):
+    """Store a durable mapping between the original file, S3 audio, and transcript."""
+    task = transcriptions[task_id]
+    audio_key = normalize_audio_s3_key(task.get("s3_key"))
+    if not audio_key:
+        return
+
+    transcript_name = get_json_name_for_filename(task.get("filename") or task_id)
+    record = {
+        "task_id": task_id,
+        "original_filename": task.get("filename") or task_id,
+        "audio_s3_key": audio_key,
+        "storage_name": PurePosixPath(audio_key).name,
+        "transcript_name": transcript_name,
+        "transcript_s3_key": task.get("transcript_s3_key"),
+        "has_transcript": task.get("status") == "completed",
+        "transcript_partial": bool(task.get("recovery_warning")),
+        "status": task.get("status", "uploaded"),
+        "updated_at": int(time.time()),
+    }
+
+    try:
+        with library_manifest_lock:
+            manifest = load_library_manifest()
+            manifest.setdefault("version", 1)
+            manifest.setdefault("files", {})[audio_key] = record
+            s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=S3_LIBRARY_MANIFEST_KEY,
+                Body=json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                ContentType="application/json",
+            )
+    except Exception as e:
+        print(f"Library mapping save failed for {task_id}: {e}")
+
+
+def backfill_library_manifest_from_tasks():
+    """Backfill durable library identities from legacy local task JSON files."""
+    try:
+        with library_manifest_lock:
+            manifest = load_library_manifest()
+            manifest.setdefault("version", 1)
+            files = manifest.setdefault("files", {})
+            changed = False
+
+            for task_id, task in list(transcriptions.items()):
+                audio_key = normalize_audio_s3_key(task.get("s3_key"))
+                if not audio_key:
+                    continue
+                original_filename = task.get("filename") or task_id
+                transcript_s3_key = None
+                if task.get("status") == "completed":
+                    transcript_s3_key = get_transcript_s3_key(task)
+                    task["transcript_s3_key"] = transcript_s3_key
+                    local_transcript = UPLOAD_DIR / get_json_name_for_filename(original_filename)
+                    previous = files.get(audio_key, {})
+                    if local_transcript.exists() and previous.get("transcript_s3_key") != transcript_s3_key:
+                        s3.upload_file(
+                            str(local_transcript),
+                            S3_BUCKET,
+                            transcript_s3_key,
+                            ExtraArgs={"ContentType": "application/json"},
+                        )
+                record = {
+                    "task_id": task_id,
+                    "original_filename": original_filename,
+                    "audio_s3_key": audio_key,
+                    "storage_name": PurePosixPath(audio_key).name,
+                    "transcript_name": get_json_name_for_filename(original_filename),
+                    "transcript_s3_key": transcript_s3_key,
+                    "has_transcript": task.get("status") == "completed",
+                    "transcript_partial": bool(task.get("recovery_warning")),
+                    "status": task.get("status", "uploaded"),
+                    "updated_at": int(time.time()),
+                }
+                previous = files.get(audio_key, {})
+                comparable_previous = {k: previous.get(k) for k in record if k != "updated_at"}
+                comparable_record = {k: value for k, value in record.items() if k != "updated_at"}
+                if comparable_previous != comparable_record:
+                    files[audio_key] = record
+                    changed = True
+
+            if changed:
+                s3.put_object(
+                    Bucket=S3_BUCKET,
+                    Key=S3_LIBRARY_MANIFEST_KEY,
+                    Body=json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                    ContentType="application/json",
+                )
+                print(f"Library manifest updated with {len(files)} file mapping(s).")
+    except Exception as e:
+        print(f"Library manifest backfill failed: {e}")
+
+
+def describe_s3_file(item: dict, manifest: dict | None = None):
+    """Attach the original task and transcript identity to an S3 audio object."""
+    record = dict(item)
+    key = normalize_audio_s3_key(record.get("key"))
+    storage_name = PurePosixPath(key).name
+    task_id, task = find_task_by_s3_key(key)
+    remote_mapping = (manifest or {}).get("files", {}).get(key, {})
+
+    if task:
+        original_filename = task.get("filename") or task_id
+        transcript_name = get_json_name_for_filename(original_filename)
+        transcript_s3_key = task.get("transcript_s3_key") or (
+            get_transcript_s3_key(task) if task.get("status") == "completed" else None
+        )
+        has_transcript = task.get("status") == "completed"
+        transcript_partial = bool(task.get("recovery_warning"))
+        status = task.get("status", "uploaded")
+    else:
+        original_filename = remote_mapping.get("original_filename") or record.get("name") or storage_name
+        task_id = remote_mapping.get("task_id") or original_filename
+        transcript_name = remote_mapping.get("transcript_name")
+        transcript_s3_key = remote_mapping.get("transcript_s3_key")
+        has_transcript = bool(remote_mapping.get("has_transcript"))
+        transcript_partial = bool(remote_mapping.get("transcript_partial"))
+        status = remote_mapping.get("status") or "uploaded"
+
+    record.update({
+        "name": original_filename,
+        "storage_name": storage_name,
+        "task_id": task_id,
+        "transcript_name": transcript_name,
+        "transcript_s3_key": transcript_s3_key,
+        "has_transcript": has_transcript,
+        "transcript_partial": transcript_partial,
+        "transcription_status": status,
+        "transcription": summarize_transcription_state(task or remote_mapping, transcript_partial),
+        "normalization": summarize_normalization_state(task_id, has_transcript),
+    })
+    return record
+
+
+def summarize_transcription_state(source: dict | None, transcript_partial: bool = False) -> dict:
+    """Build the live transcription status shown on a library record."""
+    source = source or {}
+    status = str(source.get("status") or "uploaded")
+    progress = max(0, min(100, int(source.get("progress") or 0)))
+    message = ""
+    labels = {
+        "uploading": "Загрузка аудио",
+        "processing": "Диаризация и транскрибация",
+        "diarizing": "Диаризация",
+        "local_ocr_processing": "Локальная диаризация",
+        "transcribing": "Транскрибация и выравнивание",
+        "diarization_complete": "Диаризация завершена",
+        "uploaded": "Готов к запуску",
+        "completed": "Транскрипт готов",
+        "error": "Ошибка обработки",
+    }
+    active_statuses = {"uploading", "processing", "diarizing", "local_ocr_processing", "transcribing"}
+    if status in active_statuses:
+        state = "running"
+        active = True
+        message = str(source.get("runpod_progress_message") or "").strip()
+    elif status == "completed" and transcript_partial:
+        state = "partial"
+        active = False
+    elif status == "completed":
+        state = "completed"
+        active = False
+        progress = 100
+    elif status == "error":
+        state = "failed"
+        active = False
+        message = str(source.get("error") or message or "Обработка остановлена с ошибкой.")
+    else:
+        state = "ready"
+        active = False
+        if status == "uploaded":
+            progress = 0
+        elif status == "diarization_complete":
+            progress = 50
+    if not message:
+        message = {
+            "uploading": "Файл загружается в облачное хранилище.",
+            "processing": "RunPod выполняет полный конвейер.",
+            "diarizing": "RunPod определяет границы и голоса участников.",
+            "local_ocr_processing": "Локальная модель определяет реплики и говорящих.",
+            "transcribing": "RunPod распознаёт и выравнивает речь.",
+            "diarization_complete": "Можно запускать распознавание речи.",
+            "uploaded": "Аудио загружено; транскрибация ещё не запускалась.",
+            "completed": "Транскрипт доступен для просмотра и нормализации.",
+        }.get(status, "Ожидает следующего действия.")
+    return {
+        "state": state,
+        "status": status,
+        "label": labels.get(status, status.replace("_", " ").strip().capitalize()),
+        "message": message,
+        "progress": progress,
+        "active": active,
+    }
+
+
+def summarize_normalization_state(task_id: str, has_transcript: bool) -> dict:
+    """Build library status and migrate legacy operator-blocked runs to the automatic policy."""
+    if not has_transcript:
+        return {
+            "state": "unavailable",
+            "overall_progress": 0,
+            "current_step": None,
+            "blocked_step": None,
+            "message": "Сначала нужна готовая транскрибация.",
+            "can_normalize": False,
+        }
+    workflow = normalization_manager.get(task_id)
+    if not workflow:
+        return {
+            "state": "not_started",
+            "overall_progress": 0,
+            "current_step": None,
+            "blocked_step": None,
+            "message": "Нормализация не запускалась.",
+            "can_normalize": True,
+        }
+    if int(workflow.get("schema_version", 1)) < WORKFLOW_SCHEMA_VERSION:
+        task = transcriptions.get(task_id)
+        if task and task.get("status") == "completed" and task.get("result"):
+            workflow = normalization_manager.ensure(task_id, task)
+    steps = workflow.get("steps") or []
+    total = len(steps)
+
+    def compact(step: dict | None) -> dict | None:
+        if not step:
+            return None
+        return {
+            "id": step.get("id"),
+            "title": step.get("title"),
+            "number": int(step.get("index", 0)) + 1,
+            "total": total,
+            "status": step.get("status"),
+        }
+
+    if steps and all(step.get("status") == "completed" for step in steps):
+        assumptions = workflow.get("assumptions") or []
+        return {
+            "state": "completed",
+            "overall_progress": 100,
+            "current_step": compact(steps[-1]),
+            "blocked_step": None,
+            "message": f"Финальный MD загружен. Допущений для оператора: {len(assumptions)}.",
+            "assumption_count": len(assumptions),
+            "assumptions": assumptions,
+            "can_normalize": True,
+        }
+
+    running = next((step for step in steps if step.get("status") in RUNNING_STATUSES), None)
+    current = running or next((step for step in steps if step.get("status") != "completed"), None)
+    blocked = current if current and current.get("status") in {"needs_review", "failed", "stale"} else None
+    if running:
+        state_name = "running"
+        message = "Sol xhigh проверяет результат." if running.get("status") == "reviewing" else "Этап выполняется в фоне."
+    elif blocked:
+        state_name = "blocked"
+        message = blocked.get("error") or (blocked.get("gate") or {}).get("summary") or blocked.get("stale_reason") or "Этап требует внимания."
+        if blocked.get("id") == "terms" and (blocked.get("details") or {}).get("action_required"):
+            message = f"Терминологических решений для проверки: {(blocked.get('details') or {})['action_required']}."
+    else:
+        state_name = "ready"
+        message = "Можно продолжить с текущего этапа."
+    return {
+        "state": state_name,
+        "overall_progress": workflow.get("overall_progress", 0),
+        "current_step": compact(current),
+        "blocked_step": compact(blocked),
+        "message": message,
+        "assumption_count": workflow.get("assumption_count", 0),
+        "assumptions": workflow.get("assumptions") or [],
+        "can_normalize": True,
+    }
+
+
 def list_s3_bucket_files():
     """Return all actual objects currently present in the configured S3 bucket."""
     files = []
+    manifest = load_library_manifest()
     continuation_token = None
 
     while True:
@@ -443,12 +815,14 @@ def list_s3_bucket_files():
             key = entry.get("Key", "")
             if not key or key.endswith("/"):
                 continue
-            files.append({
+            if key == S3_LIBRARY_MANIFEST_KEY:
+                continue
+            files.append(describe_s3_file({
                 "key": key,
                 "name": Path(key).name,
                 "size": entry.get("Size", 0),
                 "last_modified": entry.get("LastModified").isoformat() if entry.get("LastModified") else None,
-            })
+            }, manifest))
 
         if not response.get("IsTruncated"):
             break
@@ -456,6 +830,50 @@ def list_s3_bucket_files():
 
     files.sort(key=lambda item: item["last_modified"] or "", reverse=True)
     return files
+
+
+def register_existing_s3_audio(key: str, task_id: str | None = None):
+    """Register an existing S3 audio object as a ready-to-process task."""
+    normalized_key = str(key or "").strip()
+    storage_name = PurePosixPath(normalized_key).name
+    if not normalized_key or not storage_name or not is_supported_audio_filename(storage_name):
+        raise ValueError("Only existing .m4a, .mp3, and .wav audio files can be opened.")
+
+    mapped_task_id, mapped_task = find_task_by_s3_key(normalized_key)
+    if mapped_task:
+        return mapped_task_id, mapped_task
+
+    filename = Path(task_id or storage_name).name
+    if not is_supported_audio_filename(filename):
+        filename = storage_name
+    existing = transcriptions.get(filename)
+    if existing and existing.get("status") == "completed":
+        existing.setdefault("s3_key", normalized_key)
+        existing.setdefault("filename", filename)
+        return filename, existing
+
+    task = {
+        "filename": filename,
+        "is_video": False,
+        "status": "uploaded",
+        "progress": 100,
+        "result": [],
+        "s3_key": normalized_key,
+    }
+    transcriptions[filename] = task
+    return filename, task
+
+
+def stream_s3_body(body, chunk_size=1024 * 1024):
+    """Yield an S3 response body and always release its HTTP connection."""
+    try:
+        while True:
+            chunk = body.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        body.close()
 
 
 # ─── S3 Upload (Background Thread) ───
@@ -489,6 +907,7 @@ def upload_to_s3(file_path: Path, task_id: str):
         transcriptions[task_id]["status"] = "uploaded"
         transcriptions[task_id]["progress"] = 100
         transcriptions[task_id]["s3_key"] = safe_key
+        persist_task_json(task_id)
         print(f"☁️ Uploaded {file_path.name} to S3 as {safe_key}")
 
     except Exception as e:
@@ -1055,6 +1474,11 @@ async def get_s3_files():
         return JSONResponse(status_code=500, content={"error": f"Could not load S3 files: {e}"})
 
 
+class OpenS3FileRequest(BaseModel):
+    key: str
+    task_id: str | None = None
+
+
 class DeleteS3FileRequest(BaseModel):
     key: str
 
@@ -1065,6 +1489,68 @@ class DeleteAllS3FilesRequest(BaseModel):
 
 class ResetTranscriptionRequest(BaseModel):
     filename: str
+
+
+@app.post("/open-s3-file")
+async def open_s3_file(req: OpenS3FileRequest):
+    """Open an existing S3 audio object without uploading it again."""
+    try:
+        filename = PurePosixPath(str(req.key or "")).name
+        if not filename or not is_supported_audio_filename(filename):
+            raise ValueError("Only existing .m4a, .mp3, and .wav audio files can be opened.")
+        s3.head_object(Bucket=S3_BUCKET, Key=req.key)
+        task_id, task = register_existing_s3_audio(req.key, req.task_id)
+        return {
+            "task_id": task_id,
+            "filename": task_id,
+            "audio_url": f"/s3-audio?key={req.key}",
+            "task": {
+                "filename": task.get("filename") or task_id,
+                "status": task.get("status", "uploaded"),
+                "progress": task.get("progress", 100),
+                "s3_key": task.get("s3_key"),
+            },
+        }
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Could not open S3 file: {e}"})
+
+
+@app.get("/s3-audio")
+async def get_s3_audio(key: str, request: Request):
+    """Proxy S3 audio with byte-range support for the audio player."""
+    filename = PurePosixPath(str(key or "")).name
+    if not filename or not is_supported_audio_filename(filename):
+        return JSONResponse(status_code=400, content={"error": "Unsupported S3 audio file."})
+
+    params = {"Bucket": S3_BUCKET, "Key": key}
+    range_header = request.headers.get("range")
+    if range_header:
+        params["Range"] = range_header
+
+    try:
+        response = s3.get_object(**params)
+        headers = {"Accept-Ranges": "bytes"}
+        if response.get("ContentLength") is not None:
+            headers["Content-Length"] = str(response["ContentLength"])
+        if response.get("ContentRange"):
+            headers["Content-Range"] = response["ContentRange"]
+
+        suffix = Path(filename).suffix.lower()
+        media_type = {
+            ".m4a": "audio/mp4",
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+        }.get(suffix, response.get("ContentType") or "application/octet-stream")
+        return StreamingResponse(
+            stream_s3_body(response["Body"]),
+            status_code=206 if response.get("ContentRange") else 200,
+            media_type=media_type,
+            headers=headers,
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Could not stream S3 audio: {e}"})
 
 
 @app.post("/delete-s3-file")
@@ -1083,7 +1569,7 @@ async def delete_s3_file(req: DeleteS3FileRequest):
 
 @app.post("/delete-all-s3-files")
 async def delete_all_s3_files(req: DeleteAllS3FilesRequest):
-    """Delete every object from RunPod S3 and clear local server-side cache."""
+    """Delete every object from RunPod S3 without changing local files or state."""
     if req.confirm != "DELETE ALL":
         return JSONResponse(status_code=400, content={"error": "Confirmation phrase mismatch."})
 
@@ -1091,9 +1577,8 @@ async def delete_all_s3_files(req: DeleteAllS3FilesRequest):
         files = list_s3_bucket_files()
         keys = [item["key"] for item in files]
         deleted_remote = delete_s3_keys(keys)
-        deleted_local = delete_local_upload_files()
-        print(f"🗑️ Deleted all server files: remote={deleted_remote}, local={deleted_local}")
-        return {"status": "deleted", "deleted": deleted_remote, "deleted_remote": deleted_remote, "deleted_local": deleted_local}
+        print(f"🗑️ Deleted all RunPod S3 files: remote={deleted_remote}; local files preserved")
+        return {"status": "deleted", "deleted": deleted_remote, "deleted_remote": deleted_remote}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Could not delete all S3 files: {e}"})
 
@@ -1295,6 +1780,230 @@ async def list_transcriptions():
         except:
             pass
     return results
+
+
+# ═══════════════════════════════════════════
+#  TRANSCRIPT NORMALIZATION WORKFLOW
+# ═══════════════════════════════════════════
+
+class NormalizationApprovalRequest(BaseModel):
+    operator: str = "Оператор"
+    comment: str = ""
+
+
+class TermDecisionRequest(BaseModel):
+    decision: str
+    proposed: str | None = None
+
+
+class SpeakerRegistryRequest(BaseModel):
+    speakers: list[dict]
+    overrides: list[dict] = Field(default_factory=list)
+
+
+class NormalizationSettingsRequest(BaseModel):
+    contextual_rediarization: bool = True
+
+
+class NormalizationAgentCommandRequest(BaseModel):
+    command: str
+    step_id: str | None = None
+
+
+@app.get("/conclusions")
+async def list_conclusions():
+    return {"tasks": conclusions_manager.list()}
+
+
+@app.post("/conclusions")
+async def create_conclusions(file: UploadFile = File(...), instruction: str = Form(...)):
+    try:
+        return conclusions_manager.create(file.filename or "transcript.txt", await file.read(), instruction)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"Не удалось сохранить файл: {exc}"})
+
+
+@app.get("/conclusions/{task_id}")
+async def get_conclusions(task_id: str):
+    task = conclusions_manager.get(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Задача выводов не найдена."})
+    return task
+
+
+@app.get("/conclusions/{task_id}/download")
+async def download_conclusions(task_id: str, format: str = "docx"):
+    try:
+        path, filename = conclusions_manager.result_path(task_id, format)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if filename.endswith(".docx") else "text/plain; charset=utf-8"
+        return FileResponse(path, media_type=media_type, filename=filename)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "Задача выводов не найдена."})
+    except FileNotFoundError:
+        return JSONResponse(status_code=409, content={"error": "Выводы ещё не готовы."})
+
+
+def get_normalization_task(task_id: str):
+    task = transcriptions.get(task_id)
+    if not task:
+        raise KeyError("Транскрипт не найден.")
+    if task.get("status") != "completed" or not task.get("result"):
+        raise ValueError("Нормализацию можно начать после завершения транскрибации.")
+    return task
+
+
+@app.post("/normalization/{task_id}")
+async def create_normalization(task_id: str):
+    try:
+        return normalization_manager.ensure(task_id, get_normalization_task(task_id))
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.get("/normalization/{task_id}")
+async def get_normalization(task_id: str):
+    try:
+        return normalization_manager.ensure(task_id, get_normalization_task(task_id))
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/settings")
+async def update_normalization_settings(task_id: str, request: NormalizationSettingsRequest):
+    try:
+        normalization_manager.ensure(task_id, get_normalization_task(task_id))
+        return normalization_manager.update_settings(task_id, request.contextual_rediarization)
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/agent-command")
+async def submit_normalization_agent_command(task_id: str, request: NormalizationAgentCommandRequest):
+    try:
+        task = get_normalization_task(task_id)
+        return normalization_manager.submit_agent_command(task_id, request.command, request.step_id, task)
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/steps/{step_id}/run")
+async def run_normalization_step(task_id: str, step_id: str):
+    try:
+        return normalization_manager.start(task_id, get_normalization_task(task_id), step_id)
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/steps/{step_id}/recheck")
+async def recheck_normalization_step(task_id: str, step_id: str):
+    try:
+        return normalization_manager.recheck(task_id, step_id)
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/fidelity/remediate")
+async def remediate_normalization_fidelity(task_id: str):
+    try:
+        return normalization_manager.remediate_fidelity(task_id, get_normalization_task(task_id))
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/structure/remediate")
+async def remediate_normalization_structure(task_id: str):
+    try:
+        get_normalization_task(task_id)
+        return normalization_manager.remediate_structure(task_id)
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/approve")
+async def approve_normalization(task_id: str, request: NormalizationApprovalRequest):
+    try:
+        return normalization_manager.approve(task_id, request.operator, request.comment)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "Процесс нормализации не найден."})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/render/reference-recovery")
+async def recover_normalization_render(task_id: str):
+    try:
+        return normalization_manager.recover_render_from_operator_reference(task_id)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "operator-reference.md не найден."})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/terms/{term_id}")
+async def decide_normalization_term(task_id: str, term_id: str, request: TermDecisionRequest):
+    try:
+        return normalization_manager.decide_term(task_id, term_id, request.decision, request.proposed)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "Термин не найден."})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.post("/normalization/{task_id}/speaker-registry")
+async def update_normalization_registry(task_id: str, request: SpeakerRegistryRequest):
+    try:
+        return normalization_manager.update_registry(task_id, request.speakers, request.overrides)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "Реестр участников ещё не создан."})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except (KeyError, ValueError) as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.get("/normalization/{task_id}/steps/{step_id}/artifact")
+async def get_normalization_artifact(task_id: str, step_id: str):
+    try:
+        return normalization_manager.artifact(task_id, step_id)
+    except (FileNotFoundError, StopIteration):
+        return JSONResponse(status_code=404, content={"error": "Артефакт этапа не найден."})
+
+
+@app.get("/normalization/{task_id}/download")
+async def download_normalized_markdown(task_id: str):
+    try:
+        path = normalization_manager.final_path(task_id)
+        state = normalization_manager.get(task_id) or {}
+        filename = next((step.get("details", {}).get("filename") for step in state.get("steps", []) if step.get("id") == "render"), None)
+        return FileResponse(path, media_type="text/markdown; charset=utf-8", filename=filename or "transcript_normalized.md")
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "Финальный MD ещё не сформирован."})
 
 
 # ═══════════════════════════════════════════
@@ -1688,6 +2397,7 @@ async def sync_now():
 
 
 # ─── Static Files & Startup ───
+threading.Thread(target=backfill_library_manifest_from_tasks, daemon=True).start()
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":

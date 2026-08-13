@@ -1,10 +1,15 @@
 uploads/
+normalization_runs/
+conclusions_runs/
 logs-github/
 betterment/
 cleanup/
 *.md
 !README.md
+!AGENTS.md
+!wiki.md
 !glm5review.md
+!static/report-instruction.md
 *.txt
 !requirements.txt
 .env

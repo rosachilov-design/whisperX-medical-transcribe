@@ -5,13 +5,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Transcriber Pro</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/png" href="favicon-sa.png">
+    <link rel="stylesheet" href="style.css?v=20260813-sol-workflow-labels">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
         href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap"
         rel="stylesheet">
-    <script src="https://unpkg.com/wavesurfer.js@7"></script>
 </head>
 
 <body>
@@ -27,39 +27,73 @@
             <div class="orb orb-blue"></div>
 
             <!-- Header -->
-            <div class="launch-header">
-                <div class="logo-badge">⚡</div>
-                <h1 class="logo-title">Transcriber <span class="logo-pro">Pro</span></h1>
-                <p class="logo-tagline">GPU-powered · Speaker Diarization · Auto-sync</p>
-            </div>
+            <header class="launch-header">
+                <nav class="workspace-tabs" role="tablist" aria-label="Разделы рабочей области">
+                    <button id="files-tab" class="workspace-tab active" type="button" role="tab" aria-selected="true"
+                        aria-controls="files-tab-panel">Файлы</button>
+                    <button id="normalization-tab" class="workspace-tab" type="button" role="tab" aria-selected="false"
+                        aria-controls="normalization-tab-panel">Нормализация <span id="normalization-active-count" class="workspace-tab-count hidden">0</span></button>
+                    <button id="conclusions-tab" class="workspace-tab" type="button" role="tab" aria-selected="false"
+                        aria-controls="conclusions-tab-panel">Выводы <span id="conclusions-active-count" class="workspace-tab-count hidden">0</span></button>
+                </nav>
+                <div class="topbar-actions">
+                    <button id="runpod-toggle-btn" class="runpod-toggle-btn" type="button" aria-label="RunPod settings"
+                        aria-expanded="false" aria-controls="runpod-sidebar">
+                        <span class="runpod-toggle-icon" aria-hidden="true">⚙</span>
+                        <span class="runpod-toggle-label">RunPod settings</span>
+                        <span class="runpod-toggle-arrow" aria-hidden="true">↗</span>
+                    </button>
+                </div>
+            </header>
 
+            <div id="files-tab-panel" class="workspace-tab-panel" role="tabpanel" aria-labelledby="files-tab">
+            <input type="file" id="file-input" accept=".m4a,.mp3,.wav" multiple hidden>
             <!-- Two-column layout -->
             <div class="launch-grid">
 
-                <!-- Left: Drop Zone -->
+                <!-- Upload card hidden: the entire launch screen is now the drag-and-drop zone.
                 <div class="launch-card drop-card-big" id="dropzone">
-                    <div class="card-icon">🎙️</div>
-                    <h2>Drop Audio File</h2>
-                    <p class="card-sub">M4A, MP3, WAV supported</p>
+                    <div class="card-icon upload-mark" aria-hidden="true">↑</div>
+                    <div class="upload-copy">
+                        <h2>Добавить аудио <span>или выбрать</span></h2>
+                        <p class="card-sub">M4A, MP3 или WAV · файл откроется в рабочем режиме</p>
+                    </div>
                     <div class="drop-hint">
                         <span class="drop-hint-line"></span>
-                        <span>or click to browse</span>
+                        <span>click to choose</span>
                         <span class="drop-hint-line"></span>
                     </div>
-                    <input type="file" id="file-input" accept=".m4a,.mp3,.wav" style="display:none">
                     <div class="drop-formats">
                         <span class="format-tag">M4A</span>
                         <span class="format-tag">MP3</span>
                         <span class="format-tag">WAV</span>
                     </div>
+                    <span class="upload-arrow" aria-hidden="true">↗</span>
+                    <div id="batch-panel" class="batch-panel hidden">
+                        <div class="batch-panel-header">
+                            <div>
+                                <strong>Parallel transcription</strong>
+                                <span id="batch-summary">Preparing files...</span>
+                            </div>
+                            <button id="clear-batch-btn" class="batch-clear-btn" type="button">Hide list</button>
+                        </div>
+                        <div id="batch-task-list" class="batch-task-list"></div>
+                        <p class="batch-worker-hint">RunPod assigns one job per worker when Max Workers is at least the number of files.</p>
+                    </div>
                 </div>
+                -->
 
                 <!-- Right: Pod Config Form -->
-                <div class="launch-card pod-config-card">
+                <aside id="runpod-sidebar" class="launch-card pod-config-card hidden" aria-hidden="true"
+                    aria-label="RunPod settings">
                     <div class="pod-config-header">
-                        <div class="card-icon">🧠</div>
-                        <h2>RunPod Setup</h2>
+                        <div>
+                            <span class="section-kicker">Infrastructure</span>
+                            <h2><span class="card-icon" aria-hidden="true">🧠</span> Pod connection</h2>
+                        </div>
                         <div id="pod-status-badge" class="status-badge offline">Offline</div>
+                        <button id="runpod-close-btn" class="runpod-close-btn" type="button"
+                            aria-label="Close RunPod settings">×</button>
                     </div>
 
                     <div class="config-form">
@@ -143,40 +177,108 @@
                             <div class="log-line muted">Waiting for connection...</div>
                         </div>
                     </div>
-                </div>
+                </aside>
 
             </div>
 
-            <div class="launch-utility-bar">
-                <div id="improve-audio-dropzone" class="audio-improve-dropzone">
-                    <div class="improve-audio-copy">
-                        <span class="improve-audio-title">Improve Audio Quality</span>
-                        <span class="improve-audio-sub">Drop an M4A here to reduce bass muddiness before transcription</span>
-                    </div>
-                    <button id="improve-audio-browse" class="utility-browse-btn" type="button">Choose M4A</button>
-                    <input type="file" id="improve-audio-input" accept=".m4a" style="display:none">
-                </div>
-                <div id="improve-audio-status" class="improve-audio-status hidden"></div>
-            </div>
+            <div id="runpod-sidebar-scrim" class="runpod-sidebar-scrim hidden"></div>
 
             <div class="launch-s3-browser">
+                <div class="s3-browser-actions library-external-actions">
+                    <button id="refresh-s3-btn" class="s3-refresh-btn" type="button">
+                        <span aria-hidden="true">↻</span> Обновить
+                    </button>
+                    <button id="delete-all-s3-btn" class="s3-delete-all-btn" type="button">Очистить сервер</button>
+                </div>
                 <div class="s3-browser-card">
-                    <div class="s3-browser-header">
-                        <div>
-                            <h3>S3 File Browser</h3>
-                            <p>Live file list from the RunPod bucket. Refresh on page load and delete when needed.</p>
-                        </div>
-                        <div class="s3-browser-actions">
-                            <button id="refresh-s3-btn" class="s3-refresh-btn" type="button">Refresh</button>
-                            <button id="delete-all-s3-btn" class="s3-delete-all-btn" type="button">Delete everything</button>
-                        </div>
+                    <div class="library-toolbar">
+                        <div id="s3-browser-status" class="s3-browser-status">Loading files...</div>
+                        <span class="library-toolbar-note"><span class="library-toolbar-dot"></span>Актуальные статусы</span>
                     </div>
-                    <div id="s3-browser-status" class="s3-browser-status">Loading files...</div>
                     <div id="s3-file-list" class="s3-file-list">
                         <div class="s3-empty-state">Loading files from the server...</div>
                     </div>
                 </div>
             </div>
+            </div>
+
+            <section id="normalization-tab-panel" class="workspace-tab-panel normalization-queue-panel hidden" role="tabpanel"
+                aria-labelledby="normalization-tab">
+                <header class="conclusions-hero normalization-queue-hero">
+                    <div>
+                        <span class="section-kicker">Sol medium + Sol xhigh</span>
+                        <h2>Очередь нормализации</h2>
+                        <p>Здесь собраны все готовые транскрипты. Этапы разных файлов выполняются параллельно и останавливаются только там, где нужен оператор.</p>
+                    </div>
+                    <span class="conclusions-parallel-note"><i aria-hidden="true"></i> Синхронно с файлами</span>
+                </header>
+
+                <div class="normalization-queue-summary">
+                    <div><strong id="normalization-ready-total">0</strong><span>готовы к запуску</span></div>
+                    <div><strong id="normalization-running-total">0</strong><span>выполняются</span></div>
+                    <div><strong id="normalization-review-total">0</strong><span>допущений зафиксировано</span></div>
+                    <button id="start-ready-normalizations-btn" class="normalization-batch-start" type="button">Запустить готовые</button>
+                </div>
+
+                <div class="conclusions-queue-card normalization-queue-card">
+                    <div class="conclusions-queue-header">
+                        <div>
+                            <span class="section-kicker">Queue</span>
+                            <h3>Транскрипты и этапы</h3>
+                        </div>
+                        <button id="refresh-normalizations-btn" class="s3-refresh-btn" type="button"><span aria-hidden="true">↻</span> Обновить</button>
+                    </div>
+                    <div id="normalization-task-list" class="normalization-task-list">
+                        <div class="s3-empty-state">Загрузка очереди…</div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="conclusions-tab-panel" class="workspace-tab-panel conclusions-panel hidden" role="tabpanel"
+                aria-labelledby="conclusions-tab">
+                <header class="conclusions-hero">
+                    <div>
+                        <span class="section-kicker">Codex / Sol High</span>
+                        <h2>Выводы по операторской версии</h2>
+                        <p>Исходный транскрипт остаётся без изменений. Каждый файл обрабатывается отдельно и параллельно.</p>
+                    </div>
+                    <span class="conclusions-parallel-note"><i aria-hidden="true"></i> Параллельная очередь</span>
+                </header>
+
+                <div class="conclusions-compose">
+                    <label class="conclusions-instruction-label" for="conclusions-instruction">
+                        <span>Инструкция для отчёта</span>
+                        <small>Загружена из report-instruction.md и применяется ко всем выбранным файлам.</small>
+                    </label>
+                    <textarea id="conclusions-instruction" class="conclusions-instruction"
+                        placeholder="Загрузка инструкции…" spellcheck="false"></textarea>
+
+                    <div id="conclusions-dropzone" class="conclusions-dropzone" tabindex="0" role="button"
+                        aria-label="Выбрать операторские транскрипты">
+                        <span class="conclusions-drop-icon" aria-hidden="true">↑</span>
+                        <div>
+                            <strong>Перетащите операторские версии или выберите файлы</strong>
+                            <span>Можно выбрать сразу несколько — все запустятся одновременно</span>
+                        </div>
+                        <span class="conclusions-formats">MD · TXT · DOCX · JSON</span>
+                    </div>
+                    <input id="conclusions-file-input" type="file" accept=".md,.txt,.docx,.json" multiple class="hidden">
+                    <div id="conclusions-compose-status" class="conclusions-compose-status" role="status"></div>
+                </div>
+
+                <div class="conclusions-queue-card">
+                    <div class="conclusions-queue-header">
+                        <div>
+                            <span class="section-kicker">Queue</span>
+                            <h3>Файлы и готовые выводы</h3>
+                        </div>
+                        <button id="refresh-conclusions-btn" class="s3-refresh-btn" type="button"><span aria-hidden="true">↻</span> Обновить</button>
+                    </div>
+                    <div id="conclusions-task-list" class="conclusions-task-list">
+                        <div class="s3-empty-state">Загрузка очереди…</div>
+                    </div>
+                </div>
+            </section>
         </div>
 
         <!-- ═══════════════════════════════════════════════ -->
@@ -198,16 +300,18 @@
                     </button>
                 </div>
 
-                <div id="waveform-container">
-                    <div id="waveform"></div>
+                <div id="media-player-container">
+                    <audio id="audio-player" preload="metadata"></audio>
+                    <div id="audio-timeline" class="audio-timeline">
+                        <span id="current-time" class="timeline-time">0:00</span>
+                        <input id="audio-seek" class="audio-seek" type="range" min="0" max="0" step="0.1"
+                            value="0" aria-label="Позиция воспроизведения" disabled>
+                        <span id="duration" class="timeline-time">0:00</span>
+                    </div>
                     <video id="video-player" class="video-player hidden" controls playsinline></video>
                 </div>
 
                 <div class="audio-controls">
-                    <div class="time-display">
-                        <span id="current-time">0:00</span>
-                    </div>
-
                     <div class="controls-column">
                         <div class="playback-buttons">
                             <button id="skip-back-15" class="control-btn" title="Back 15s">« 15s</button>
@@ -228,9 +332,6 @@
                         </div>
                     </div>
 
-                    <div class="time-display">
-                        <span id="duration">0:00</span>
-                    </div>
                 </div>
 
                 <div id="video-participants-panel" class="video-participants-panel hidden">
@@ -288,7 +389,16 @@
 
             <!-- Right Side: Transcription -->
             <div class="right-panel">
-                <div class="speaker-management">
+                <div id="review-mode-switch" class="review-mode-switch hidden" role="tablist" aria-label="Document view">
+                    <button id="transcript-mode-btn" class="review-mode-btn active" type="button" role="tab"
+                        aria-selected="true">Транскрипт</button>
+                    <button id="normalization-mode-btn" class="review-mode-btn" type="button" role="tab"
+                        aria-selected="false">
+                        Нормализация <span id="normalization-mode-dot" class="mode-status-dot"></span>
+                    </button>
+                </div>
+
+                <div id="speaker-management" class="speaker-management">
                     <div class="speaker-input-row">
                         <input type="text" id="speaker-input" placeholder="Add speaker name...">
                         <button id="add-speaker-btn">Add</button>
@@ -305,9 +415,98 @@
                     </div>
                 </div>
 
+                <section id="normalization-workspace" class="normalization-workspace hidden" aria-label="Нормализация транскрипта">
+                    <header class="normalization-header">
+                        <div>
+                            <span class="normalization-kicker">Source → final MD</span>
+                            <h2>Подготовка транскрипта</h2>
+                            <p>Каждый этап сохраняет отдельный результат. Можно вернуться назад, не теряя уже сделанную работу.</p>
+                        </div>
+                        <div class="normalization-overall" aria-label="Общий прогресс">
+                            <strong id="normalization-overall-value">0%</strong>
+                            <span>готово</span>
+                        </div>
+                    </header>
+
+                    <div id="normalization-background-bar" class="normalization-background-bar hidden" role="status">
+                        <span class="normalization-spinner" aria-hidden="true"></span>
+                        <div>
+                            <strong id="normalization-background-title">Этап выполняется в фоне</strong>
+                            <span id="normalization-background-copy">Можно перейти к любому завершённому этапу.</span>
+                        </div>
+                        <span id="normalization-background-progress">0%</span>
+                    </div>
+
+                    <nav id="normalization-step-rail" class="normalization-step-rail" aria-label="Этапы нормализации"></nav>
+
+                    <div class="normalization-stage-layout">
+                        <main id="normalization-stage-content" class="normalization-stage-content">
+                            <div class="normalization-empty">
+                                <span>01</span>
+                                <h3>Начните с проверки источника</h3>
+                                <p>Система проверит структуру JSON и подготовит компактную рабочую копию.</p>
+                            </div>
+                        </main>
+
+                        <aside class="normalization-inspector" aria-label="Действия этапа">
+                            <div>
+                                <span id="normalization-stage-number" class="inspector-step-number">Этап 1 из 10</span>
+                                <h3 id="normalization-stage-title">Источник</h3>
+                                <p id="normalization-stage-description">Проверка JSON и компактная каноническая копия.</p>
+                            </div>
+                            <div id="normalization-stage-message" class="normalization-stage-message"></div>
+                            <div class="normalization-action-stack">
+                                <button id="normalization-primary-action" class="normalization-primary-action" type="button">Запустить этап</button>
+                                <button id="normalization-rerun-action" class="normalization-secondary-action hidden" type="button">Пересчитать этап полностью</button>
+                                <button id="normalization-download-action" class="normalization-secondary-action hidden" type="button">Скачать MD</button>
+                            </div>
+                            <p class="normalization-agent-note"><span aria-hidden="true">⌁</span> Sol medium выполняет producer-проходы · Sol xhigh проверяет gate.</p>
+                        </aside>
+                    </div>
+
+                    <button id="normalization-agent-toggle" class="normalization-agent-toggle hidden" type="button"
+                        aria-controls="normalization-agent-window" aria-expanded="false">
+                        <span class="normalization-agent-toggle-mark" aria-hidden="true">⌁</span>
+                        Агент
+                        <span id="normalization-agent-toggle-status" class="normalization-agent-status-dot"></span>
+                    </button>
+
+                    <aside id="normalization-agent-window" class="normalization-agent-window" role="dialog"
+                        aria-modal="false" aria-labelledby="normalization-agent-title">
+                        <header class="normalization-agent-header">
+                            <div>
+                                <span class="normalization-agent-eyebrow">Sol xhigh · управление процессом</span>
+                                <h3 id="normalization-agent-title">Агент нормализации</h3>
+                            </div>
+                            <button id="normalization-agent-close" class="normalization-agent-close" type="button"
+                                aria-label="Закрыть окно агента">×</button>
+                        </header>
+                        <div class="normalization-agent-context">
+                            <span>Текущий контекст</span>
+                            <strong id="normalization-agent-step">Источник</strong>
+                        </div>
+                        <div id="normalization-agent-messages" class="normalization-agent-messages" aria-live="polite">
+                            <div class="normalization-agent-empty">
+                                <strong>Дайте агенту команду</strong>
+                                <p>Например: «Сделай по твоей рекомендации».</p>
+                            </div>
+                        </div>
+                        <form id="normalization-agent-form" class="normalization-agent-form">
+                            <label for="normalization-agent-input">Команда агенту</label>
+                            <textarea id="normalization-agent-input" rows="3" maxlength="2000"
+                                placeholder="Например: сделай по твоей рекомендации"></textarea>
+                            <div>
+                                <span>Enter — отправить · Shift+Enter — новая строка</span>
+                                <button id="normalization-agent-send" type="submit">Отправить команду</button>
+                            </div>
+                            <p id="normalization-agent-error" class="normalization-agent-error hidden" role="alert"></p>
+                        </form>
+                    </aside>
+                </section>
+
                 <div id="footer-actions" class="footer-actions hidden">
-                    <button id="open-json-btn" class="open-btn">
-                        .json <span id="json-filename-span" class="hidden">transcript.json</span>
+                    <button id="open-json-btn" class="open-btn" type="button">
+                        Download JSON <span id="json-filename-span" class="hidden">transcript.json</span>
                     </button>
                     <button id="reset-transcription-btn" class="reset-transcription-btn" type="button">
                         Reset transcription
@@ -317,7 +516,7 @@
             </div>
         </div>
     </div>
-    <script src="app.js"></script>
+    <script src="app.js?v=20260813-sol-workflow-labels-s3-only-delete"></script>
 </body>
 
 </html>
